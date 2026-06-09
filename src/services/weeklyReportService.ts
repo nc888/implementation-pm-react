@@ -123,7 +123,6 @@ function markdownTable(headers: string[], rows: Array<Array<string | number | un
 
 function taskRow(state: AppState, task: Task) {
   return [
-    task.code,
     task.title,
     stageLabel(state, task.stage, task.projectId),
     task.owner || "未指派",
@@ -139,18 +138,18 @@ function unfinishedTasks(tasks: Task[]) {
 function weeklyThisWeekTaskSection(state: AppState, tasks: Task[]) {
   return `## 六、本周工作内容
 ${markdownTable(
-    ["任务编号", "任务名称", "阶段", "负责人", "状态", "进度"],
+    ["任务名称", "阶段", "负责人", "状态", "进度"],
     tasks.map((task) => taskRow(state, task)),
-    ["暂无", "本周暂无工作内容", "-", "-", "-", "-"],
+    ["本周暂无工作内容", "-", "-", "-", "-"],
   )}`;
 }
 
 function weeklyNextWeekTaskSection(state: AppState, tasks: Task[]) {
   return `## 七、下周工作项
 ${markdownTable(
-    ["任务编号", "任务名称", "阶段", "负责人", "状态", "进度"],
+    ["任务名称", "阶段", "负责人", "状态", "进度"],
     unfinishedTasks(tasks).map((task) => taskRow(state, task)),
-    ["暂无", "下周暂无已计划的未完成子任务", "-", "-", "-", "-"],
+    ["下周暂无已计划的未完成子任务", "-", "-", "-", "-"],
   )}`;
 }
 
@@ -198,6 +197,7 @@ export function normalizeWeeklyMailSubject(project: Project, reportDate: string,
 }
 
 const dueDateColumnLabels = new Set(["截止", "截止时间", "截止日期", "完成时间", "结束时间"]);
+const taskCodeColumnLabels = new Set(["编号", "序号", "任务编号", "任务ID", "任务Id", "WBSID", "WBS ID", "ID", "id"]);
 
 function parseMarkdownTableLine(line: string) {
   const trimmed = line.trim();
@@ -275,7 +275,7 @@ ${markdownTable(
   )}`;
 }
 
-function stripDueDateColumnsFromTable(lines: string[], startIndex: number) {
+function stripWeeklyReportTableColumns(lines: string[], startIndex: number, options: { removeTaskCodeColumns?: boolean } = {}) {
   const tableLines = [lines[startIndex], lines[startIndex + 1]];
   let index = startIndex + 2;
   while (index < lines.length && lines[index].trim() && lines[index].includes("|")) {
@@ -287,7 +287,7 @@ function stripDueDateColumnsFromTable(lines: string[], startIndex: number) {
   const removeIndexes = new Set(
     headers
       .map((header, columnIndex) => ({ header: header.replace(/\s|\*/g, ""), columnIndex }))
-      .filter(({ header }) => dueDateColumnLabels.has(header))
+      .filter(({ header }) => dueDateColumnLabels.has(header) || Boolean(options.removeTaskCodeColumns && taskCodeColumnLabels.has(header)))
       .map(({ columnIndex }) => columnIndex),
   );
   if (!removeIndexes.size) return { nextIndex: index, tableLines };
@@ -303,11 +303,16 @@ function stripDueDateColumnsFromTable(lines: string[], startIndex: number) {
   };
 }
 
+function isWeeklyTaskSectionHeading(heading: string) {
+  return /本周(?:更新了进度的子任务|工作内容|工作项)|下周(?:工作项|工作内容|计划)/.test(heading);
+}
+
 export function sanitizeWeeklyReportContent(content: string) {
   const lines = content.split(/\r?\n/);
   const nextLines: string[] = [];
   let index = 0;
   let hasSeenBody = false;
+  let currentHeading = "";
 
   while (index < lines.length) {
     const line = lines[index];
@@ -331,6 +336,7 @@ export function sanitizeWeeklyReportContent(content: string) {
     }
 
     const heading = trimmed.match(/^#{1,6}\s+(.+)$/);
+    if (heading) currentHeading = heading[1].trim();
     if (heading && /项目专家补充反馈/.test(heading[1])) {
       index += 1;
       while (index < lines.length && !/^#{1,6}\s+/.test(lines[index])) index += 1;
@@ -342,14 +348,14 @@ export function sanitizeWeeklyReportContent(content: string) {
       index += 1;
       while (index < lines.length && !lines[index].trim()) index += 1;
       if (isMarkdownTableAt(lines, index)) {
-        index = stripDueDateColumnsFromTable(lines, index).nextIndex;
+        index = stripWeeklyReportTableColumns(lines, index).nextIndex;
       }
       while (index < lines.length && !lines[index].trim()) index += 1;
       continue;
     }
 
     if (isMarkdownTableAt(lines, index)) {
-      const table = stripDueDateColumnsFromTable(lines, index);
+      const table = stripWeeklyReportTableColumns(lines, index, { removeTaskCodeColumns: isWeeklyTaskSectionHeading(currentHeading) });
       nextLines.push(...table.tableLines);
       hasSeenBody = true;
       index = table.nextIndex;

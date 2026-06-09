@@ -30,6 +30,7 @@
   --rail-width: 132px;
   --nav-width: 224px;
   --nav-collapsed-width: 54px;
+  --weekly-sticky-top: calc(var(--primary-nav-height) + 110px);
   color-scheme: light;
 }
 
@@ -8783,7 +8784,8 @@ pre {
 
 .weekly-summary-panel.card.pad {
   position: sticky;
-  top: 18px;
+  top: var(--weekly-sticky-top);
+  max-height: calc(100vh - var(--weekly-sticky-top) - 18px);
   border: 0;
   background: transparent;
   box-shadow: none;
@@ -9361,6 +9363,7 @@ pre {
 
 .weekly-visual-card {
   display: grid;
+  align-content: center;
   min-width: 0;
   min-height: 160px;
   gap: 10px;
@@ -9390,6 +9393,7 @@ pre {
 }
 
 .weekly-visual-card.analysis {
+  align-content: center;
   gap: 8px;
 }
 
@@ -9518,6 +9522,7 @@ pre {
 .weekly-mini-bars {
   display: grid;
   gap: 7px;
+  width: 100%;
 }
 
 .weekly-mini-bar {
@@ -9604,8 +9609,9 @@ pre {
 
 .weekly-task-card.card.pad {
   position: sticky;
-  top: 18px;
+  top: var(--weekly-sticky-top);
   justify-self: stretch;
+  max-height: calc(100vh - var(--weekly-sticky-top) - 18px);
   overflow: hidden;
   border: 0.5px solid #e5e7eb;
   border-radius: 10px;
@@ -10491,6 +10497,12 @@ pre {
 
   .content {
     padding: 18px;
+  }
+
+  .weekly-summary-panel.card.pad,
+  .weekly-task-card.card.pad {
+    position: static;
+    max-height: none;
   }
 
   .workflow-layout,
