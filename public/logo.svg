@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 128" width="256" height="256" role="img" aria-label="Implementation PM logo">
+  <polygon points="50,4 80,22 50,40 20,22" fill="#85B7EB"/>
+  <polygon points="50,4 80,22 80,34 50,16" fill="#B5D4F4"/>
+  <polygon points="50,4 20,22 20,34 50,16" fill="#E6F1FB"/>
+  <path d="M 38 20 L 46 28 L 62 12" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <polygon points="50,36 90,60 50,84 10,60" fill="#378ADD"/>
+  <polygon points="50,36 90,60 90,76 50,52" fill="#5B9DE2"/>
+  <polygon points="50,36 10,60 10,76 50,52" fill="#85B7EB"/>
+  <polygon points="50,72 100,102 50,128 0,102" fill="#2563EB"/>
+  <polygon points="50,72 100,102 100,118 50,86" fill="#378ADD"/>
+  <polygon points="50,72 0,102 0,118 50,86" fill="#5B9DE2"/>
+</svg>

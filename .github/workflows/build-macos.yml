@@ -1,0 +1,65 @@
+name: Build macOS Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "mac-*"
+      - "v*"
+
+jobs:
+  build-macos:
+    name: Build macOS universal app
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build macOS app and DMG
+        run: npm run tauri:build:mac:universal
+
+      - name: Package .app as zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/macos
+          shopt -s nullglob
+          APPS=(src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app)
+          APP_PATH="${APPS[0]:-}"
+          if [[ -z "${APP_PATH}" ]]; then
+            echo "No .app bundle found"
+            exit 1
+          fi
+          APP_NAME="$(basename "${APP_PATH}" .app)"
+          ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "output/macos/${APP_NAME}-macos-universal.app.zip"
+          DMGS=(src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          if [[ "${#DMGS[@]}" -eq 0 ]]; then
+            echo "No .dmg bundle found"
+            exit 1
+          fi
+          cp "${DMGS[@]}" output/macos/
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: implementation-pm-macos-universal
+          path: |
+            output/macos/*.dmg
+            output/macos/*.app.zip
+            src-tauri/target/universal-apple-darwin/release/bundle/
+          if-no-files-found: error

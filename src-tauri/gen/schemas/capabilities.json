@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Main window access for the local project manager app.","local":true,"windows":["main"],"permissions":["core:default","sql:default","sql:allow-execute"]}}

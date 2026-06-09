@@ -1,0 +1,39 @@
+{
+  "name": "implementation-pm-react",
+  "version": "0.1.11",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5174 --strictPort",
+    "build": "tsc -b && vite build",
+    "icons": "node scripts/make-tauri-icon.mjs",
+    "icons:mac": "npm run icons && node scripts/make-macos-icns.mjs",
+    "standalone": "node scripts/make-standalone.mjs",
+    "preview": "vite preview --host 0.0.0.0 --port 5174 --strictPort",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:mac": "npm run icons:mac && tauri build --bundles app,dmg --config output/tauri-macos.conf.json",
+    "tauri:build:mac:universal": "npm run icons:mac && tauri build --target universal-apple-darwin --bundles app,dmg --config output/tauri-macos.conf.json"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-sql": "^2.4.0",
+    "@vitejs/plugin-react": "^5.1.1",
+    "better-sqlite3": "^12.10.0",
+    "imapflow": "^1.3.6",
+    "lucide-react": "^1.17.0",
+    "nodemailer": "^8.0.10",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
+    "@types/nodemailer": "^8.0.0",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3"
+  }
+}
