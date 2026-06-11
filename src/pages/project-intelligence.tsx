@@ -1,19 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, FileText, Lightbulb, Send, Trash2, User } from "lucide-react";
 import type { AiMessage, AppState, AssistantScope } from "../types";
-import { buildProjectSnapshot, calcProjectMetrics, getProject } from "../services/contextBuilder";
+import { calcProjectMetrics, getProject } from "../services/contextBuilder";
 import type { AiService } from "../services/aiService";
 import { assistantSessionMessages, normalizeAssistantScope } from "../services/assistantSessions";
+import { buildAssistantDataSnapshot, buildFullProjectAssistantSnapshot } from "../services/assistantProjectDataService";
 import { Card } from "../components/ui";
 import { RichMessage } from "./page-shared";
 
 const defaultAssistantGreeting =
-  "我可以基于当前项目快照回答问题、解释健康评分、生成周报草稿，也可以按明确指令直接更新任务状态、日期、进度和负责人。";
+  "我可以基于当前项目完整数据回答问题、解释健康评分、生成周报草稿，也可以按明确指令直接更新项目、任务、交付物、风险问题、范围和里程碑。";
 
 const legacyAssistantGreeting =
   "我可以基于当前项目快照回答问题、解释健康评分、生成周报草稿。AI 结果默认只是建议，不会直接修改项目数据。";
 
-const compactAssistantGreeting = "已接入当前项目。你可以直接问进度、风险，也可以下达任务状态、日期和进度变更指令。";
+const compactAssistantGreeting = "已接入当前项目完整数据。你可以直接问进度、风险、健康分，也可以下达明确的数据变更指令。";
 
 const assistantLoadingText = "正在基于当前项目快照调用 AI 模型...";
 const scopedAssistantLoadingText = "正在基于当前会话范围调用 AI 模型...";
@@ -24,7 +25,7 @@ function displayAssistantContent(content: string) {
 
 function assistantGreeting(scope: AssistantScope) {
   return scope === "all"
-    ? "已进入所有项目模式。你可以汇总全平台进度、风险、逾期、交付物，也可以下达跨项目任务变更指令。"
+    ? "已进入所有项目模式。你可以汇总全平台进度、风险、逾期、交付物，也可以下达明确的跨项目数据变更指令。"
     : compactAssistantGreeting;
 }
 
@@ -56,7 +57,7 @@ export function AssistantPage({
 }) {
   const project = getProject(state);
   const scope = normalizeAssistantScope(assistantScope);
-  const snapshot = buildProjectSnapshot(state, project, "chat");
+  const snapshot = buildFullProjectAssistantSnapshot(state, project);
   const metrics = calcProjectMetrics(state, project);
   const visibleMessages = assistantSessionMessages(state.aiMessages, scope, project.id);
   const sessionMessages = visibleMessages.map((message) => streamingMessages[message.id] || message);
@@ -66,7 +67,7 @@ export function AssistantPage({
       : [{ id: `assistant-greeting-${scope}-${project.id}`, role: "assistant" as const, content: assistantGreeting(scope), createdAt: "" }];
   const projectSummaries = state.projects.map((item) => {
     const projectMetrics = calcProjectMetrics(state, item);
-    const projectSnapshot = buildProjectSnapshot(state, item, "chat");
+    const projectSnapshot = buildFullProjectAssistantSnapshot(state, item);
     return { project: item, metrics: projectMetrics, snapshot: projectSnapshot };
   });
   const platformTotals = {
@@ -81,21 +82,7 @@ export function AssistantPage({
     .flatMap((item) => item.snapshot.tasks.map((task) => ({ ...task, projectName: item.project.name })))
     .filter((task) => task.status !== "done")
     .slice(0, 6);
-  const modalSnapshot =
-    scope === "all"
-      ? {
-          scope: "all-projects",
-          generatedAt: new Date().toISOString(),
-          totals: platformTotals,
-          projects: projectSummaries.map((item) => ({
-            project: item.snapshot.project,
-            metrics: item.snapshot.metrics,
-            tasks: item.snapshot.tasks,
-            risks: item.snapshot.risks,
-            deliverables: item.snapshot.deliverables,
-          })),
-        }
-      : snapshot;
+  const modalSnapshot = buildAssistantDataSnapshot(state, project, scope);
   const config = state.aiModelConfigs.find((item) => item.isDefault) || state.aiModelConfigs[0];
   const [question, setQuestion] = useState("");
   const [showSnapshot, setShowSnapshot] = useState(false);
@@ -270,7 +257,7 @@ export function AssistantPage({
             <div className="modal-header">
               <div>
                 <h3>发送给 AI 的项目快照</h3>
-                <p className="muted">当前对话会携带这些项目上下文；明确的任务变更指令会直接写入本地项目数据。</p>
+                <p className="muted">当前对话会携带这些完整项目上下文；明确的数据变更指令会写入本地项目数据。</p>
               </div>
               <button className="icon-button" onClick={() => setShowSnapshot(false)} aria-label="关闭">
                 ×

@@ -41,6 +41,7 @@ import type {
   Task,
   TaskStatus,
   WeeklyProjectStatus,
+  WeeklyReportAudience,
   WeeklyReportInput,
   WeeklyReportPreferenceInput,
 } from "../types";
@@ -67,20 +68,26 @@ import {
   getDeliverableDirectoryPathLabel,
   loadDeliverableDirectoryHandle,
   saveDeliverableAttachmentFile,
+  saveProjectCsvFile,
 } from "../services/deliverableFileStorage";
 import type { LocalDirectoryHandle } from "../services/deliverableFileStorage";
 import type { TaskNode } from "../services/contextBuilder";
 import type { AiService } from "../services/aiService";
 import { saveEmailDraft } from "../services/emailDraftService";
 import {
+  buildCustomerWeeklyReportContent,
+  buildWeeklyCustomerMailSubject,
   buildWeeklyMailSubject,
   buildWeeklyReportContent,
   defaultNextWeekTaskIds,
   defaultThisWeekUpdatedTaskIds,
+  ensureCustomerWeeklyReportContentSchema,
   ensureWeeklyReportContentSchema,
   formatDateRange,
   getLeafSubtasks,
+  isCustomerVisibleRisk,
   nextWeekRangeFor,
+  normalizeWeeklyCustomerMailSubject,
   normalizeWeeklyMailSubject,
   sanitizeWeeklyReportContent,
   tasksByIds,
@@ -110,6 +117,7 @@ import {
   RingChart,
   riskIssueMatchesSearch,
   riskStatusLabel,
+  riskVisibilityLabel,
   renderInlineMarkdown,
   isMarkdownTableStart,
   parseMarkdownTableRow,
@@ -1093,8 +1101,11 @@ function RisksPageLegacy({
   const renderItem = (item: (typeof risks)[number]) => (
     <div className="task-card" key={item.id}>
       <Badge tone={toneFor(item.severity)}>{item.severity}</Badge>
+      <Badge tone={item.riskVisibility === "external" ? "warning" : "primary"}>{riskVisibilityLabel(item.riskVisibility)}</Badge>
       <strong>{item.title}</strong>
       <p className="muted">{item.responsePlan}</p>
+      {item.internalHandling ? <p className="muted">内部处理：{item.internalHandling}</p> : null}
+      {item.customerAssistance ? <p className="muted">需客户协助：{item.customerAssistance}</p> : null}
       <Badge>{item.status}</Badge>
       <div className="actions-row">
         <Button tone="ghost" onClick={() => onEditRiskIssue(item)}>
@@ -1336,8 +1347,11 @@ export function ProjectOverviewPage({
                     <strong>{item.title}</strong>
                     <span className={`severity-dot ${item.severity === "高" ? "high" : item.severity === "中" ? "medium" : "low"}`}>{item.severity}</span>
                     <span className="micro-tag">{item.kind === "risk" ? "风险" : "问题"}</span>
+                    <span className="micro-tag">{riskVisibilityLabel(item.riskVisibility)}</span>
                   </div>
                   <p>{riskStatusLabel(item.status)} · {item.responsePlan}</p>
+                  {item.internalHandling ? <p>内部处理：{item.internalHandling}</p> : null}
+                  {item.customerAssistance ? <p>需客户协助：{item.customerAssistance}</p> : null}
                 </div>
               ))}
               {!followUpTasks.length && !followUpRisks.length ? <div className="empty compact">当前没有需要紧急跟进的事项。</div> : null}
@@ -1797,6 +1811,15 @@ export function GanttPage({
   );
 }
 
+function csvCell(value: unknown) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function csvContent(headers: string[], rows: unknown[][]) {
+  return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
 export function DeliverablesPage({
   state,
   onAddDeliverable,
@@ -1925,6 +1948,35 @@ export function DeliverablesPage({
     }
   };
 
+  const exportDeliverablesCsv = async () => {
+    const rows = deliverables.map((item) => {
+      const linkedTask = resolveLinkedTask(item);
+      return [
+        item.code,
+        item.name,
+        linkedTask ? `${linkedTask.code} - ${linkedTask.title}` : item.linkedTaskId || "",
+        item.status,
+        item.acceptance,
+        item.dueDate,
+        attachmentRequirement(item) === "none" ? "无需上传" : item.attachmentName ? "已上传" : "未上传",
+        item.attachmentName || "",
+        item.attachmentPath || "",
+      ];
+    });
+    try {
+      const saved = await saveProjectCsvFile({
+        projectId: project.id,
+        storageLabel: currentStorageLabel,
+        fileName: "交付物信息列表.csv",
+        content: csvContent(["编号", "交付物", "关联任务项", "状态", "验收", "截止日期", "附件要求", "附件名称", "附件路径"], rows),
+      });
+      setStorageMessage({ tone: "success", text: `CSV 已保存：${saved.filePath}` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "CSV 保存失败。";
+      setStorageMessage({ tone: "danger", text: message });
+    }
+  };
+
   const renderLinkedTask = (item: Deliverable) => {
     const linkedTask = resolveLinkedTask(item);
     return linkedTask ? `${linkedTask.code} - ${linkedTask.title}` : item.code || "未关联";
@@ -2003,6 +2055,10 @@ export function DeliverablesPage({
             <FolderOpen aria-hidden="true" />
             选择保存路径
           </Button>
+          <Button tone="ghost" onClick={() => void exportDeliverablesCsv()}>
+            <Save aria-hidden="true" />
+            保存CSV
+          </Button>
           <Button tone="primary" onClick={onAddDeliverable}>新建交付物</Button>
         </div>
       </div>
@@ -2070,16 +2126,65 @@ export function RisksPage({
   onEditRiskIssue: (riskIssue: RiskIssue) => void;
   onDeleteRiskIssue: (riskIssueId: string) => void;
 }) {
+  const project = getProject(state);
+  const tasks = projectTasks(state, project.id);
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
   const risks = projectRisks(state).filter((item) => item.kind === "risk").filter((item) => riskIssueMatchesSearch(state, item));
   const issues = projectRisks(state).filter((item) => item.kind === "issue").filter((item) => riskIssueMatchesSearch(state, item));
+  const [storageMessage, setStorageMessage] = useState<{ tone: "success" | "warning" | "danger"; text: string } | null>(null);
+  const currentStorageLabel = project.deliverableStoragePath || getDeliverableDirectoryPathLabel(project.id) || "未配置保存路径";
+
+  const exportRiskIssuesCsv = async () => {
+    const rows = [...risks, ...issues].map((item) => {
+      const linkedTask = item.linkedTaskId ? taskById.get(item.linkedTaskId) : undefined;
+      return [
+        item.kind === "risk" ? "风险" : "问题",
+        item.title,
+        item.severity,
+        riskStatusLabel(item.status),
+        riskVisibilityLabel(item.riskVisibility),
+        item.responsePlan,
+        item.internalHandling,
+        item.customerAssistance,
+        linkedTask ? `${linkedTask.code} - ${linkedTask.title}` : item.linkedTaskId || "",
+      ];
+    });
+    try {
+      const saved = await saveProjectCsvFile({
+        projectId: project.id,
+        storageLabel: currentStorageLabel,
+        fileName: "风险问题信息列表.csv",
+        content: csvContent(["类型", "标题", "等级", "状态", "可见性", "应对措施", "内部处理", "需客户协助", "关联任务"], rows),
+      });
+      setStorageMessage({ tone: "success", text: `CSV 已保存：${saved.filePath}` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "CSV 保存失败。";
+      setStorageMessage({ tone: "danger", text: message });
+    }
+  };
+
   const renderGroup = (title: string, items: RiskIssue[], kind: RiskIssue["kind"]) => (
     <Card className="pad risk-list-panel">
       <div className="table-toolbar compact">
         <div>
           <h3>{title}</h3>
           <p className="muted">{items.length} 个 · 高 {items.filter((item) => item.severity === "高").length} · 中 {items.filter((item) => item.severity === "中").length}</p>
+          {kind === "risk" ? (
+            <div className="deliverable-storage-line">
+              <span>保存路径：{currentStorageLabel}</span>
+              {storageMessage ? <span className={`deliverable-storage-message ${storageMessage.tone}`}>{storageMessage.text}</span> : null}
+            </div>
+          ) : null}
         </div>
-        <Button tone="primary" onClick={() => onAddRiskIssue(kind)}>新建{kind === "risk" ? "风险" : "问题"}</Button>
+        <div className="deliverable-toolbar-actions">
+          {kind === "risk" ? (
+            <Button tone="ghost" onClick={() => void exportRiskIssuesCsv()}>
+              <Save aria-hidden="true" />
+              保存CSV
+            </Button>
+          ) : null}
+          <Button tone="primary" onClick={() => onAddRiskIssue(kind)}>新建{kind === "risk" ? "风险" : "问题"}</Button>
+        </div>
       </div>
       <div className="compact-signal-list">
         {items.map((item) => (
@@ -2088,8 +2193,11 @@ export function RisksPage({
               <strong>{item.title}</strong>
               <span className={`severity-dot ${item.severity === "高" ? "high" : item.severity === "中" ? "medium" : "low"}`}>{item.severity}</span>
               <Badge>{riskStatusLabel(item.status)}</Badge>
+              <Badge tone={item.riskVisibility === "external" ? "warning" : "primary"}>{riskVisibilityLabel(item.riskVisibility)}</Badge>
             </div>
             <p>{item.responsePlan}</p>
+            {item.internalHandling ? <p>内部处理：{item.internalHandling}</p> : null}
+            {item.customerAssistance ? <p>需客户协助：{item.customerAssistance}</p> : null}
             <div className="compact-item-actions">
               <Button tone="ghost" onClick={() => onEditRiskIssue(item)}>编辑</Button>
               <Button tone="danger" onClick={() => onDeleteRiskIssue(item.id)}>删除</Button>
@@ -2239,7 +2347,7 @@ function WeeklyTaskSelector({
 }
 
 function stripInlineMarkdownText(value: string) {
-  return value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
+  return value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/~~([^~]+)~~/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
 }
 
 function extractPercent(value: string) {
@@ -2328,34 +2436,63 @@ function countRowsInSection(content: string, sectionKeyword: string) {
   return count;
 }
 
+function riskStatsInWeeklySection(content: string) {
+  const lines = content.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => /^#{1,4}\s+/.test(line.trim()) && line.includes("风险"));
+  if (headingIndex < 0) return { riskCount: 0, issueCount: 0, openRiskIssueCount: 0, totalRiskIssueCount: 0 };
+  const tableIndex = lines.findIndex((line, index) => index > headingIndex && isMarkdownTableStart(lines, index));
+  if (tableIndex < 0) return { riskCount: 0, issueCount: 0, openRiskIssueCount: 0, totalRiskIssueCount: 0 };
+  let index = tableIndex + 2;
+  let riskCount = 0;
+  let issueCount = 0;
+  let openRiskIssueCount = 0;
+  const headers = parseMarkdownTableRow(lines[tableIndex]).map(stripInlineMarkdownText);
+  const statusIndex = headers.findIndex((header) => header.includes("状态"));
+  while (index < lines.length && lines[index].includes("|") && !tableSeparatorPattern.test(lines[index])) {
+    const row = parseMarkdownTableRow(lines[index]);
+    const kind = stripInlineMarkdownText(row[0] || "");
+    const status = stripInlineMarkdownText(row[statusIndex >= 0 ? statusIndex : 3] || "");
+    if (!/^暂无$/.test(kind)) {
+      if (kind.includes("风险")) riskCount += 1;
+      if (kind.includes("问题")) issueCount += 1;
+      if (status !== "关闭") openRiskIssueCount += 1;
+    }
+    index += 1;
+  }
+  return { riskCount, issueCount, openRiskIssueCount, totalRiskIssueCount: riskCount + issueCount };
+}
+
 function extractWeeklyVisualStats(content: string) {
   const progressMatch = content.match(/整体进度\s+\*\*(\d+(?:\.\d+)?)%\*\*/);
   const fallbackProgressMatch = content.match(/整体进度\s*(\d+(?:\.\d+)?)%/);
   const statusMatch = content.match(/项目状态为\s+\*\*([^*]+)\*\*/);
-  const taskCompletionMatch = content.match(/任务完成情况：已完成\s+(\d+)\/(\d+)\s+项，开放\s+(\d+)\s+项/);
+  const taskCompletionMatch = content.match(/任务完成情况：已完成\s+(\d+)\/(\d+)\s+项，\s*(?:(\d+)\s*个交付物未更新状态|开放\s+(\d+)\s+项)/);
   const thisWeekMatch = content.match(/本周已纳入\s+(\d+)\s+个/);
   const nextWeekMatch = content.match(/下周计划推进\s+(\d+)\s+个/);
   const progress = Number(progressMatch?.[1] || fallbackProgressMatch?.[1] || 0);
+  const doneCount = Number(taskCompletionMatch?.[1] || 0);
+  const totalCount = Number(taskCompletionMatch?.[2] || 0);
+  const riskStats = riskStatsInWeeklySection(content);
   return {
     progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, Math.round(progress))) : 0,
     status: statusMatch?.[1] || "未维护",
-    doneCount: Number(taskCompletionMatch?.[1] || 0),
-    totalCount: Number(taskCompletionMatch?.[2] || 0),
-    openCount: Number(taskCompletionMatch?.[3] || 0),
+    doneCount,
+    totalCount,
+    openCount: Number(taskCompletionMatch?.[4] || Math.max(0, totalCount - doneCount)),
+    pendingDeliverableCount: Number(taskCompletionMatch?.[3] || 0),
     thisWeekCount: Number(thisWeekMatch?.[1] || 0),
     nextWeekCount: Number(nextWeekMatch?.[1] || 0),
-    riskCount: countRowsInSection(content, "风险 / 问题"),
+    ...riskStats,
   };
 }
 
 function WeeklyVisualSummary({ content }: { content: string }) {
   const stats = extractWeeklyVisualStats(content);
   const bars = [
-    ["本周任务", stats.thisWeekCount],
-    ["下周任务", stats.nextWeekCount],
-    ["风险问题", stats.riskCount],
+    ["本周任务", stats.thisWeekCount, stats.totalCount],
+    ["下周任务", stats.nextWeekCount, stats.openCount],
+    ["风险问题", stats.openRiskIssueCount, stats.totalRiskIssueCount],
   ] as const;
-  const maxValue = Math.max(1, ...bars.map(([, value]) => value));
 
   return (
     <div className="weekly-visual-summary">
@@ -2364,20 +2501,82 @@ function WeeklyVisualSummary({ content }: { content: string }) {
           <strong>{stats.progress}%</strong>
           <span>整体进度</span>
         </div>
-        <small className="weekly-progress-summary">已完成 {stats.doneCount}/{stats.totalCount} 项，开放 {stats.openCount} 项</small>
+        <small className="weekly-progress-summary">已完成 {stats.doneCount}/{stats.totalCount} 项，{stats.pendingDeliverableCount} 个交付物未更新状态</small>
       </div>
       <div className="weekly-visual-card status">
         <span>项目状态</span>
         <WeeklyStatusPill value={stats.status} />
-        <small>打开风险 / 问题 {stats.riskCount} 项。</small>
+        <small>风险 {stats.riskCount} 个，问题 {stats.issueCount} 个。</small>
       </div>
       <div className="weekly-visual-card analysis">
         <span>本周分析</span>
         <div className="weekly-mini-bars">
-          {bars.map(([label, value]) => (
+          {bars.map(([label, value, total]) => (
             <div className="weekly-mini-bar" key={label}>
               <span>{label}</span>
-              <div><i style={{ width: `${Math.max(6, Math.round((value / maxValue) * 100))}%` }} /></div>
+              <div><i style={{ width: `${Math.max(6, Math.round((value / Math.max(1, total)) * 100))}%` }} /></div>
+              <strong>{value}/{total}</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function extractCustomerWeeklyVisualStats(content: string) {
+  const workCount = countRowsInSection(content, "本周工作内容");
+  const attentionCount = countRowsInSection(content, "需客户关注");
+  const riskIssueCount = countRowsInSection(content, "风险");
+  const planCount = countRowsInSection(content, "下周计划");
+  const totalCount = Math.max(1, workCount + attentionCount + riskIssueCount + planCount);
+  return {
+    workCount,
+    attentionCount,
+    riskIssueCount,
+    planCount,
+    totalCount,
+    attentionLevel: attentionCount || riskIssueCount ? "需关注" : "平稳",
+  };
+}
+
+function WeeklyCustomerVisualSummary({ content }: { content: string }) {
+  const stats = extractCustomerWeeklyVisualStats(content);
+  const bars = [
+    ["本周工作", stats.workCount, stats.totalCount],
+    ["需配合", stats.attentionCount, stats.totalCount],
+    ["风险问题", stats.riskIssueCount, stats.totalCount],
+    ["下周计划", stats.planCount, stats.totalCount],
+  ] as const;
+
+  return (
+    <div className="weekly-customer-visual-summary">
+      <div className="weekly-customer-hero-card">
+        <span>客户协同看板</span>
+        <strong>{stats.attentionLevel}</strong>
+        <small>{stats.attentionCount ? `${stats.attentionCount} 项需要客户关注或配合` : "暂无需客户额外配合事项"}</small>
+      </div>
+      <div className="weekly-customer-stat-grid">
+        <div>
+          <span>本周工作</span>
+          <strong>{stats.workCount}</strong>
+        </div>
+        <div>
+          <span>风险问题</span>
+          <strong>{stats.riskIssueCount}</strong>
+        </div>
+        <div>
+          <span>下周计划</span>
+          <strong>{stats.planCount}</strong>
+        </div>
+      </div>
+      <div className="weekly-customer-chart-card">
+        <span>内容分布</span>
+        <div className="weekly-customer-bars">
+          {bars.map(([label, value, total]) => (
+            <div className="weekly-customer-bar" key={label}>
+              <span>{label}</span>
+              <div><i style={{ width: `${Math.max(5, Math.round((value / Math.max(1, total)) * 100))}%` }} /></div>
               <strong>{value}</strong>
             </div>
           ))}
@@ -2392,12 +2591,16 @@ function isWeeklyPreviewBlockStart(lines: string[], index: number) {
   return !line.trim() || /^报告日期：|^统计周期：/.test(line.trim()) || /^#{1,4}\s+/.test(line) || /^\d+[.)]\s+/.test(line) || /^[-*]\s+/.test(line) || isMarkdownTableStart(lines, index);
 }
 
-function WeeklyDraftPreview({ content }: { content: string }) {
+function WeeklyDraftPreview({ content, audience = "internal" }: { content: string; audience?: WeeklyReportAudience }) {
   const lines = content.split(/\r?\n/);
   const blocks: JSX.Element[] = [];
   let index = 0;
   let currentHeading = "";
   let visualSummaryInserted = false;
+
+  if (audience === "customer") {
+    blocks.push(<WeeklyCustomerVisualSummary content={content} key="customer-visual-summary" />);
+  }
 
   while (index < lines.length) {
     const line = lines[index];
@@ -2518,18 +2721,20 @@ function WeeklyDraftPreview({ content }: { content: string }) {
     }
   }
 
-  return <article className="weekly-preview-document">{blocks}</article>;
+  return <article className={`weekly-preview-document ${audience}`}>{blocks}</article>;
 }
 
 function WeeklyDraftFullscreen({
   content,
   mode,
+  audience = "internal",
   onModeChange,
   onChange,
   onClose,
 }: {
   content: string;
   mode: "preview" | "edit";
+  audience?: WeeklyReportAudience;
   onModeChange: (mode: "preview" | "edit") => void;
   onChange: (content: string) => void;
   onClose: () => void;
@@ -2564,7 +2769,7 @@ function WeeklyDraftFullscreen({
             <textarea className="weekly-draft-textarea fullscreen" value={content} onChange={(event) => onChange(event.target.value)} />
           ) : (
             <div className="weekly-preview-shell fullscreen">
-              <WeeklyDraftPreview content={content} />
+              <WeeklyDraftPreview content={content} audience={audience} />
             </div>
           )}
         </div>
@@ -2576,9 +2781,11 @@ function WeeklyDraftFullscreen({
 
 function WeeklyDraftComposer({
   content,
+  audience = "internal",
   onChange,
 }: {
   content: string;
+  audience?: WeeklyReportAudience;
   onChange: (content: string) => void;
 }) {
   const [mode, setMode] = useState<"preview" | "edit">("preview");
@@ -2606,13 +2813,14 @@ function WeeklyDraftComposer({
         <textarea className="weekly-draft-textarea" value={content} onChange={(event) => onChange(event.target.value)} />
       ) : (
         <div className="weekly-preview-shell">
-          <WeeklyDraftPreview content={content} />
+          <WeeklyDraftPreview content={content} audience={audience} />
         </div>
       )}
       {fullscreen ? (
         <WeeklyDraftFullscreen
           content={content}
           mode={mode}
+          audience={audience}
           onModeChange={setMode}
           onChange={onChange}
           onClose={() => setFullscreen(false)}
@@ -2639,8 +2847,23 @@ function buildWeeklyMailSubjectFromTemplate(template: string | undefined, projec
     .replace(/\{\{\s*clientName\s*\}\}/gi, project.client || "");
 }
 
+function weeklyAudienceLabel(audience: WeeklyReportAudience) {
+  return audience === "customer" ? "客户周报" : "内部周报";
+}
+
+function buildDefaultWeeklySubject(audience: WeeklyReportAudience, project: { name: string }, reportDate: string) {
+  return audience === "customer" ? buildWeeklyCustomerMailSubject(project, reportDate) : buildWeeklyMailSubject(project, reportDate);
+}
+
+function normalizeWeeklySubjectByAudience(audience: WeeklyReportAudience, project: { name: string }, reportDate: string, subject?: string) {
+  return audience === "customer"
+    ? normalizeWeeklyCustomerMailSubject(project, reportDate, subject)
+    : normalizeWeeklyMailSubject(project, reportDate, subject);
+}
+
 type WeeklyConfigDraft = {
   projectOwner: string;
+  implementationPersonnel: string;
   implementationMode: ProjectImplementationMode;
   projectStatus: WeeklyProjectStatus;
   recipientsTo: string;
@@ -2650,24 +2873,29 @@ type WeeklyConfigDraft = {
 
 function WeeklyConfigModal({
   draft,
+  audience,
   onChange,
   onSave,
   onClose,
 }: {
   draft: WeeklyConfigDraft;
+  audience: WeeklyReportAudience;
   onChange: (draft: WeeklyConfigDraft) => void;
   onSave: () => void;
   onClose: () => void;
 }) {
   const updateDraft = (patch: Partial<WeeklyConfigDraft>) => onChange({ ...draft, ...patch });
+  const audienceLabel = weeklyAudienceLabel(audience);
+  const recipientLabel = audience === "customer" ? "客户收件人" : "内部收件人";
+  const ccLabel = audience === "customer" ? "客户抄送人" : "内部抄送人";
 
   return createPortal(
     <div className="weekly-config-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="weekly-config-modal" role="dialog" aria-modal={true} aria-label="周报配置" onMouseDown={(event) => event.stopPropagation()}>
         <div className="weekly-config-modal-head">
           <div>
-            <h3>周报配置</h3>
-            <p className="muted">配置会长期保存到当前项目，直到下次修改。</p>
+            <h3>{audienceLabel}配置</h3>
+            <p className="muted">基础信息随项目长期保存，收件人按内部 / 客户周报分别保存。</p>
           </div>
           <button type="button" className="weekly-config-close" onClick={onClose} aria-label="关闭周报配置">
             <X aria-hidden="true" />
@@ -2675,8 +2903,12 @@ function WeeklyConfigModal({
         </div>
         <div className="weekly-config-form">
           <label className="field">
-            <span>项目负责人</span>
-            <input value={draft.projectOwner} onChange={(event) => updateDraft({ projectOwner: event.currentTarget.value })} placeholder="填写周报负责人" />
+            <span>项目经理</span>
+            <input value={draft.projectOwner} onChange={(event) => updateDraft({ projectOwner: event.currentTarget.value })} placeholder="填写项目经理" />
+          </label>
+          <label className="field">
+            <span>实施人员名称</span>
+            <input value={draft.implementationPersonnel} onChange={(event) => updateDraft({ implementationPersonnel: event.currentTarget.value })} placeholder="填写实施人员名称" />
           </label>
           <label className="field">
             <span>项目实施方式</span>
@@ -2691,11 +2923,11 @@ function WeeklyConfigModal({
             </select>
           </label>
           <label className="field wide">
-            <span>发送给</span>
-            <textarea value={draft.recipientsTo} onChange={(event) => updateDraft({ recipientsTo: event.currentTarget.value })} placeholder="name@example.com，多个收件人可用逗号、分号或换行分隔" />
+            <span>{recipientLabel}</span>
+            <textarea value={draft.recipientsTo} onChange={(event) => updateDraft({ recipientsTo: event.currentTarget.value })} placeholder={`${audience === "customer" ? "客户联系人" : "内部成员"}邮箱，多个收件人可用逗号、分号或换行分隔`} />
           </label>
           <label className="field wide">
-            <span>抄送给</span>
+            <span>{ccLabel}</span>
             <textarea value={draft.recipientsCc} onChange={(event) => updateDraft({ recipientsCc: event.currentTarget.value })} placeholder="可选，多个抄送人可用逗号、分号或换行分隔" />
           </label>
           <label className="field wide">
@@ -2730,11 +2962,16 @@ export function WeeklyPage({
 }) {
   const project = getProject(state);
   const today = localDateKey();
+  const [activeAudience, setActiveAudience] = useState<WeeklyReportAudience>("internal");
   const projectReports = useMemo(
     () => state.weeklyReports.filter((report) => report.projectId === project.id).sort((a, b) => b.reportDate.localeCompare(a.reportDate)),
     [project.id, state.weeklyReports],
   );
-  const projectReportsKey = projectReports.map((report) => `${report.id}:${report.updatedAt}`).join("|");
+  const audienceReports = useMemo(
+    () => projectReports.filter((report) => (report.audience === "customer" ? "customer" : "internal") === activeAudience),
+    [activeAudience, projectReports],
+  );
+  const projectReportsKey = audienceReports.map((report) => `${report.id}:${report.updatedAt}:${report.audience || "internal"}`).join("|");
   const projectProfileKey = `${project.id}:${project.name}:${project.client}:${project.owner}:${project.phase}:${project.nextMilestone}:${project.progress}`;
   const weeklySourceKey = useMemo(() => {
     const taskKey = state.tasks
@@ -2747,7 +2984,9 @@ export function WeeklyPage({
       .join("|");
     const riskKey = state.risksIssues
       .filter((item) => item.projectId === project.id)
-      .map((item) => `${item.id}:${item.kind}:${item.title}:${item.severity}:${item.status}:${item.responsePlan}:${item.linkedTaskId}`)
+      .map((item) =>
+        `${item.id}:${item.kind}:${item.title}:${item.severity}:${item.status}:${item.riskVisibility}:${item.responsePlan}:${item.internalHandling}:${item.customerAssistance}:${item.linkedTaskId}`,
+      )
       .join("|");
     const deliverableKey = state.deliverables
       .filter((item) => item.projectId === project.id)
@@ -2756,13 +2995,13 @@ export function WeeklyPage({
     const stageKey = stageDefinitionsForProject(state, project.id).map((stage) => `${stage.id}:${stage.label}:${stage.coefficient ?? 1}`).join("|");
     return `${taskKey}||${scopeKey}||${riskKey}||${deliverableKey}||${stageKey}`;
   }, [project.id, state.deliverables, state.projectStageConfigs, state.risksIssues, state.scopeItems, state.taskStages, state.tasks]);
-  const latestTodayReport = useMemo(() => projectReports.find((report) => report.reportDate === today), [projectReports, today]);
+  const latestTodayReport = useMemo(() => audienceReports.find((report) => report.reportDate === today), [audienceReports, today]);
   const [selectedReportId, setSelectedReportId] = useState(latestTodayReport?.id || "");
-  const selectedReport = selectedReportId ? projectReports.find((report) => report.id === selectedReportId) : latestTodayReport;
-  const latestProjectReport = projectReports[0];
+  const selectedReport = selectedReportId ? audienceReports.find((report) => report.id === selectedReportId) || latestTodayReport : latestTodayReport;
+  const latestProjectReport = audienceReports[0];
   const projectPreference = state.weeklyReportPreferences.find((preference) => preference.projectId === project.id);
   const projectPreferenceKey = projectPreference
-    ? `${projectPreference.projectId}:${projectPreference.projectOwner}:${projectPreference.implementationMode}:${projectPreference.projectStatus}:${projectPreference.recipientsTo}:${projectPreference.recipientsCc}:${projectPreference.mailSubjectTemplate}:${projectPreference.updatedAt}`
+    ? `${projectPreference.projectId}:${projectPreference.projectOwner}:${projectPreference.implementationPersonnel}:${projectPreference.implementationMode}:${projectPreference.projectStatus}:${projectPreference.recipientsTo}:${projectPreference.recipientsCc}:${projectPreference.customerRecipientsTo}:${projectPreference.customerRecipientsCc}:${projectPreference.mailSubjectTemplate}:${projectPreference.updatedAt}`
     : "";
   const reportDate = selectedReport?.reportDate || today;
   const reportDateObject = new Date(`${reportDate}T00:00:00`);
@@ -2771,21 +3010,41 @@ export function WeeklyPage({
   const allLeafSubtasks = getLeafSubtasks(state, project.id);
   const weeklyTaskTree = useMemo(() => buildTaskTree(projectTasks(state, project.id)), [project.id, state.tasks]);
   const preferredProjectOwner = projectPreference ? projectPreference.projectOwner : selectedReport?.projectOwner || latestProjectReport?.projectOwner || project.owner || "";
+  const preferredImplementationPersonnel = projectPreference
+    ? projectPreference.implementationPersonnel
+    : selectedReport?.implementationPersonnel || latestProjectReport?.implementationPersonnel || project.owner || "";
   const preferredImplementationMode = projectPreference?.implementationMode || selectedReport?.implementationMode || latestProjectReport?.implementationMode || "本地实施";
   const preferredProjectStatus = projectPreference?.projectStatus || selectedReport?.projectStatus || latestProjectReport?.projectStatus || "健康";
-  const preferredRecipientsTo = projectPreference ? projectPreference.recipientsTo : selectedReport?.recipientsTo ?? latestProjectReport?.recipientsTo ?? "";
-  const preferredRecipientsCc = projectPreference ? projectPreference.recipientsCc : selectedReport?.recipientsCc ?? latestProjectReport?.recipientsCc ?? "";
-  const preferredMailSubject = projectPreference
-    ? buildWeeklyMailSubjectFromTemplate(projectPreference.mailSubjectTemplate, project, reportDate) || buildWeeklyMailSubject(project, reportDate)
-    : selectedReport
-      ? normalizeWeeklyMailSubject(project, reportDate, selectedReport.mailSubject || selectedReport.title)
+  const preferredRecipientsTo = projectPreference
+    ? activeAudience === "customer"
+      ? projectPreference.customerRecipientsTo
+      : projectPreference.recipientsTo
+    : selectedReport?.recipientsTo ?? latestProjectReport?.recipientsTo ?? "";
+  const preferredRecipientsCc = projectPreference
+    ? activeAudience === "customer"
+      ? projectPreference.customerRecipientsCc
+      : projectPreference.recipientsCc
+    : selectedReport?.recipientsCc ?? latestProjectReport?.recipientsCc ?? "";
+  const preferredMailSubject = selectedReport
+    ? normalizeWeeklySubjectByAudience(activeAudience, project, reportDate, selectedReport.mailSubject || selectedReport.title)
+    : projectPreference
+      ? activeAudience === "internal"
+        ? buildWeeklyMailSubjectFromTemplate(projectPreference.mailSubjectTemplate, project, reportDate) || buildWeeklyMailSubject(project, reportDate)
+        : buildWeeklyCustomerMailSubject(project, reportDate)
       : buildWeeklyMailSubjectFromTemplate(
           latestProjectReport ? weeklyMailSubjectToTemplate(latestProjectReport.mailSubject, latestProjectReport.reportDate) : "",
           project,
           reportDate,
-        ) || buildWeeklyMailSubject(project, reportDate);
-  const shouldUsePreferenceContent = Boolean(projectPreference && (!selectedReport?.updatedAt || projectPreference.updatedAt.localeCompare(selectedReport.updatedAt) >= 0));
+        ) || buildDefaultWeeklySubject(activeAudience, project, reportDate);
+  const shouldUsePreferenceContent = Boolean(activeAudience === "internal" && projectPreference && (!selectedReport?.updatedAt || projectPreference.updatedAt.localeCompare(selectedReport.updatedAt) >= 0));
+  const buildContentForAudience = (buildOptions: Parameters<typeof buildWeeklyReportContent>[2]) =>
+    activeAudience === "customer" ? buildCustomerWeeklyReportContent(state, project, buildOptions) : buildWeeklyReportContent(state, project, buildOptions);
+  const ensureContentForAudience = (buildOptions: Parameters<typeof buildWeeklyReportContent>[2], draftContent: string) =>
+    activeAudience === "customer"
+      ? ensureCustomerWeeklyReportContentSchema(state, project, buildOptions, draftContent)
+      : ensureWeeklyReportContentSchema(state, project, buildOptions, draftContent);
   const [projectOwner, setProjectOwner] = useState(preferredProjectOwner);
+  const [implementationPersonnel, setImplementationPersonnel] = useState(preferredImplementationPersonnel);
   const [implementationMode, setImplementationMode] = useState<ProjectImplementationMode>(preferredImplementationMode);
   const [projectStatus, setProjectStatus] = useState<WeeklyProjectStatus>(preferredProjectStatus);
   const [thisWeekTaskIds, setThisWeekTaskIds] = useState<string[]>(
@@ -2799,18 +3058,20 @@ export function WeeklyPage({
   const [mailSubject, setMailSubject] = useState(preferredMailSubject);
   const [content, setContent] = useState(
     (!shouldUsePreferenceContent && selectedReport?.content
-      ? ensureWeeklyReportContentSchema(state, project, {
+      ? ensureContentForAudience({
           reportDate,
           projectOwner: preferredProjectOwner,
+          implementationPersonnel: preferredImplementationPersonnel,
           implementationMode: preferredImplementationMode,
           projectStatus: preferredProjectStatus,
           thisWeekTaskIds: selectedReport?.thisWeekTaskIds?.length ? selectedReport.thisWeekTaskIds : defaultThisWeekUpdatedTaskIds(state, project.id, week),
           nextWeekTaskIds: selectedReport?.nextWeekTaskIds?.length ? selectedReport.nextWeekTaskIds : defaultNextWeekTaskIds(state, project.id, nextWeek),
         }, selectedReport.content)
       : "") ||
-      buildWeeklyReportContent(state, project, {
+      buildContentForAudience({
         reportDate,
         projectOwner: preferredProjectOwner,
+        implementationPersonnel: preferredImplementationPersonnel,
         implementationMode: preferredImplementationMode,
         projectStatus: preferredProjectStatus,
         thisWeekTaskIds: selectedReport?.thisWeekTaskIds?.length ? selectedReport.thisWeekTaskIds : defaultThisWeekUpdatedTaskIds(state, project.id, week),
@@ -2821,6 +3082,7 @@ export function WeeklyPage({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [configDraft, setConfigDraft] = useState<WeeklyConfigDraft>({
     projectOwner: preferredProjectOwner,
+    implementationPersonnel: preferredImplementationPersonnel,
     implementationMode: preferredImplementationMode,
     projectStatus: preferredProjectStatus,
     recipientsTo: preferredRecipientsTo,
@@ -2833,45 +3095,110 @@ export function WeeklyPage({
   const metrics = calcProjectMetrics(state, project);
   const personDays = calcProjectPersonDays(state, project);
   const openRisks = projectRisks(state, project.id).filter((item) => item.status !== "closed");
+  const customerVisibleRisks = openRisks.filter(isCustomerVisibleRisk);
+  const visibleRiskCount = activeAudience === "customer" ? customerVisibleRisks.length : openRisks.length;
   const selectedThisWeekTasks = tasksByIds(allLeafSubtasks, thisWeekTaskIds);
   const unfinishedLeafSubtaskIds = new Set(allLeafSubtasks.filter((task) => task.status !== "done").map((task) => task.id));
   const effectiveNextWeekTaskIds = nextWeekTaskIds.filter((taskId) => unfinishedLeafSubtaskIds.has(taskId));
   const selectedNextWeekTasks = tasksByIds(allLeafSubtasks, effectiveNextWeekTaskIds);
+  const customerCompletedWorkCount = selectedThisWeekTasks.filter((task) => task.status === "done").length;
+  const customerAttentionCount = Math.min(
+    5,
+    metrics.customer +
+      customerVisibleRisks.length +
+      projectDeliverables(state, project.id).filter((item) => item.dueDate && item.dueDate <= nextWeek.end).length,
+  );
   const recipientCount = recipientsTo ? recipientsTo.split(/[;,，；\s]+/).filter(Boolean).length : 0;
   const personDayBudget = personDays.estimated || personDays.projectBudget || 0;
-  const activeTaskSourceTitle = activeTaskSource === "thisWeek" ? "本周任务来源" : "下周计划来源";
+  const thisWeekSourceLabel = activeAudience === "customer" ? "本周内容来源" : "本周任务来源";
+  const nextWeekSourceLabel = activeAudience === "customer" ? "下周计划来源" : "下周计划来源";
+  const activeTaskSourceTitle = activeTaskSource === "thisWeek" ? thisWeekSourceLabel : nextWeekSourceLabel;
   const activeTaskSourceDescription =
-    activeTaskSource === "thisWeek" ? `默认识别 ${formatDateRange(week)} 内更新进度的子任务` : `默认识别 ${formatDateRange(nextWeek)} 内计划实施的未完成子任务`;
+    activeTaskSource === "thisWeek"
+      ? activeAudience === "customer"
+        ? "选择要写入客户周报“本周工作内容”的子任务"
+        : `默认识别 ${formatDateRange(week)} 内更新进度的子任务`
+      : activeAudience === "customer"
+        ? "选择要写入客户周报“下周计划”的未完成子任务"
+        : `默认识别 ${formatDateRange(nextWeek)} 内计划实施的未完成子任务`;
   const activeTaskSourceCount = activeTaskSource === "thisWeek" ? selectedThisWeekTasks.length : selectedNextWeekTasks.length;
+  const rebuildCustomerContentForTaskIds = (nextThisWeekTaskIds: string[], nextNextWeekTaskIds: string[]) => {
+    if (activeAudience !== "customer") return;
+    setContent(
+      buildCustomerWeeklyReportContent(state, project, {
+        reportDate,
+        projectOwner,
+        implementationPersonnel,
+        implementationMode,
+        projectStatus,
+        thisWeekTaskIds: nextThisWeekTaskIds,
+        nextWeekTaskIds: nextNextWeekTaskIds,
+      }),
+    );
+  };
+  const updateThisWeekTaskIds = (taskIds: string[]) => {
+    setThisWeekTaskIds(taskIds);
+    rebuildCustomerContentForTaskIds(taskIds, effectiveNextWeekTaskIds);
+  };
+  const updateNextWeekTaskIds = (taskIds: string[]) => {
+    const filteredTaskIds = taskIds.filter((taskId) => unfinishedLeafSubtaskIds.has(taskId));
+    setNextWeekTaskIds(filteredTaskIds);
+    rebuildCustomerContentForTaskIds(thisWeekTaskIds, filteredTaskIds);
+  };
+  const resetTaskSources = () => {
+    const defaultThisWeek = defaultThisWeekUpdatedTaskIds(state, project.id, week);
+    const defaultNextWeek = defaultNextWeekTaskIds(state, project.id, nextWeek);
+    setThisWeekTaskIds(defaultThisWeek);
+    setNextWeekTaskIds(defaultNextWeek);
+    rebuildCustomerContentForTaskIds(defaultThisWeek, defaultNextWeek);
+  };
   const openTaskSource = (source: "thisWeek" | "nextWeek") => {
     setActiveTaskSource(source);
     setTaskSourceOpen(true);
   };
+  const switchAudience = (audience: WeeklyReportAudience) => {
+    if (audience === activeAudience) return;
+    setActiveAudience(audience);
+    setSelectedReportId("");
+    setTaskSourceOpen(false);
+  };
 
   useEffect(() => {
-    const nextReport = selectedReportId ? projectReports.find((report) => report.id === selectedReportId) : latestTodayReport;
+    const nextReport = selectedReportId ? audienceReports.find((report) => report.id === selectedReportId) : latestTodayReport;
     const nextReportDate = nextReport?.reportDate || today;
     const nextReportDateObject = new Date(`${nextReportDate}T00:00:00`);
     const nextWeekRange = weekRangeFor(nextReportDateObject);
     const nextNextWeekRange = nextWeekRangeFor(nextReportDateObject);
     const defaultThisWeek = defaultThisWeekUpdatedTaskIds(state, project.id, nextWeekRange);
     const defaultNextWeek = defaultNextWeekTaskIds(state, project.id, nextNextWeekRange);
-    const latestReport = projectReports[0];
+    const latestReport = audienceReports[0];
     const latestSubjectTemplate = latestReport ? weeklyMailSubjectToTemplate(latestReport.mailSubject, latestReport.reportDate) : "";
     const owner = projectPreference ? projectPreference.projectOwner : nextReport?.projectOwner || latestReport?.projectOwner || project.owner || "";
+    const personnel = projectPreference ? projectPreference.implementationPersonnel : nextReport?.implementationPersonnel || latestReport?.implementationPersonnel || project.owner || "";
     const mode = projectPreference?.implementationMode || nextReport?.implementationMode || latestReport?.implementationMode || "本地实施";
     const status = projectPreference?.projectStatus || nextReport?.projectStatus || latestReport?.projectStatus || "健康";
     const thisWeekIds = nextReport?.thisWeekTaskIds?.length ? nextReport.thisWeekTaskIds : defaultThisWeek;
     const nextWeekIds = nextReport?.nextWeekTaskIds?.length ? nextReport.nextWeekTaskIds : defaultNextWeek;
-    const to = projectPreference ? projectPreference.recipientsTo : nextReport?.recipientsTo ?? latestReport?.recipientsTo ?? "";
-    const cc = projectPreference ? projectPreference.recipientsCc : nextReport?.recipientsCc ?? latestReport?.recipientsCc ?? "";
-    const subject = projectPreference
-      ? buildWeeklyMailSubjectFromTemplate(projectPreference.mailSubjectTemplate, project, nextReportDate) || buildWeeklyMailSubject(project, nextReportDate)
-      : nextReport
-        ? normalizeWeeklyMailSubject(project, nextReportDate, nextReport.mailSubject || nextReport.title)
-        : buildWeeklyMailSubjectFromTemplate(latestSubjectTemplate, project, nextReportDate) || buildWeeklyMailSubject(project, nextReportDate);
-    const shouldUseLatestPreferenceContent = Boolean(projectPreference && (!nextReport?.updatedAt || projectPreference.updatedAt.localeCompare(nextReport.updatedAt) >= 0));
+    const to = projectPreference
+      ? activeAudience === "customer"
+        ? projectPreference.customerRecipientsTo
+        : projectPreference.recipientsTo
+      : nextReport?.recipientsTo ?? latestReport?.recipientsTo ?? "";
+    const cc = projectPreference
+      ? activeAudience === "customer"
+        ? projectPreference.customerRecipientsCc
+        : projectPreference.recipientsCc
+      : nextReport?.recipientsCc ?? latestReport?.recipientsCc ?? "";
+    const subject = nextReport
+      ? normalizeWeeklySubjectByAudience(activeAudience, project, nextReportDate, nextReport.mailSubject || nextReport.title)
+      : projectPreference
+        ? activeAudience === "internal"
+          ? buildWeeklyMailSubjectFromTemplate(projectPreference.mailSubjectTemplate, project, nextReportDate) || buildWeeklyMailSubject(project, nextReportDate)
+          : buildWeeklyCustomerMailSubject(project, nextReportDate)
+        : buildWeeklyMailSubjectFromTemplate(latestSubjectTemplate, project, nextReportDate) || buildDefaultWeeklySubject(activeAudience, project, nextReportDate);
+    const shouldUseLatestPreferenceContent = Boolean(activeAudience === "internal" && projectPreference && (!nextReport?.updatedAt || projectPreference.updatedAt.localeCompare(nextReport.updatedAt) >= 0));
     setProjectOwner(owner);
+    setImplementationPersonnel(personnel);
     setImplementationMode(mode);
     setProjectStatus(status);
     setThisWeekTaskIds(thisWeekIds);
@@ -2879,55 +3206,69 @@ export function WeeklyPage({
     setRecipientsTo(to);
     setRecipientsCc(cc);
     setMailSubject(subject);
-    setConfigDraft({ projectOwner: owner, implementationMode: mode, projectStatus: status, recipientsTo: to, recipientsCc: cc, mailSubject: subject });
+    setConfigDraft({ projectOwner: owner, implementationPersonnel: personnel, implementationMode: mode, projectStatus: status, recipientsTo: to, recipientsCc: cc, mailSubject: subject });
     setContent(
       (!shouldUseLatestPreferenceContent && nextReport?.content
-        ? ensureWeeklyReportContentSchema(state, project, {
+        ? (activeAudience === "customer" ? ensureCustomerWeeklyReportContentSchema : ensureWeeklyReportContentSchema)(state, project, {
             reportDate: nextReportDate,
             projectOwner: owner,
+            implementationPersonnel: personnel,
             implementationMode: mode,
             projectStatus: status,
             thisWeekTaskIds: thisWeekIds,
             nextWeekTaskIds: nextWeekIds,
           }, nextReport.content)
         : "") ||
-        buildWeeklyReportContent(state, project, {
+        (activeAudience === "customer" ? buildCustomerWeeklyReportContent : buildWeeklyReportContent)(state, project, {
           reportDate: nextReportDate,
           projectOwner: owner,
+          implementationPersonnel: personnel,
           implementationMode: mode,
           projectStatus: status,
           thisWeekTaskIds: thisWeekIds,
           nextWeekTaskIds: nextWeekIds,
         }),
     );
-  }, [latestTodayReport?.id, projectPreferenceKey, projectProfileKey, projectReportsKey, selectedReportId, today, weeklySourceKey]);
+  }, [activeAudience, latestTodayReport?.id, projectPreferenceKey, projectProfileKey, projectReportsKey, selectedReportId, today, weeklySourceKey]);
 
   const openWeeklyConfig = () => {
-    setConfigDraft({ projectOwner, implementationMode, projectStatus, recipientsTo, recipientsCc, mailSubject });
+    setConfigDraft({ projectOwner, implementationPersonnel, implementationMode, projectStatus, recipientsTo, recipientsCc, mailSubject });
     setSettingsOpen(true);
   };
 
   const saveWeeklyConfig = () => {
-    const normalizedMailSubject = normalizeWeeklyMailSubject(project, reportDate, configDraft.mailSubject);
+    const normalizedMailSubject = normalizeWeeklySubjectByAudience(activeAudience, project, reportDate, configDraft.mailSubject);
     setProjectOwner(configDraft.projectOwner);
+    setImplementationPersonnel(configDraft.implementationPersonnel);
     setImplementationMode(configDraft.implementationMode);
     setProjectStatus(configDraft.projectStatus);
     setRecipientsTo(configDraft.recipientsTo);
     setRecipientsCc(configDraft.recipientsCc);
     setMailSubject(normalizedMailSubject);
-    onSavePreference({
+    if (activeAudience === "internal") onSavePreference({
       projectId: project.id,
       projectOwner: configDraft.projectOwner,
+      implementationPersonnel: configDraft.implementationPersonnel,
       implementationMode: configDraft.implementationMode,
       projectStatus: configDraft.projectStatus,
       recipientsTo: configDraft.recipientsTo,
       recipientsCc: configDraft.recipientsCc,
       mailSubjectTemplate: weeklyMailSubjectToTemplate(normalizedMailSubject, reportDate),
     });
+    else onSavePreference({
+      projectId: project.id,
+      projectOwner: configDraft.projectOwner,
+      implementationPersonnel: configDraft.implementationPersonnel,
+      implementationMode: configDraft.implementationMode,
+      projectStatus: configDraft.projectStatus,
+      customerRecipientsTo: configDraft.recipientsTo,
+      customerRecipientsCc: configDraft.recipientsCc,
+    });
     setContent(
-      buildWeeklyReportContent(state, project, {
+      (activeAudience === "customer" ? buildCustomerWeeklyReportContent : buildWeeklyReportContent)(state, project, {
         reportDate,
         projectOwner: configDraft.projectOwner,
+        implementationPersonnel: configDraft.implementationPersonnel,
         implementationMode: configDraft.implementationMode,
         projectStatus: configDraft.projectStatus,
         thisWeekTaskIds,
@@ -2938,15 +3279,17 @@ export function WeeklyPage({
   };
 
   const buildReportInput = (patch: Partial<WeeklyReportInput> = {}): WeeklyReportInput => {
-    const normalizedMailSubject = normalizeWeeklyMailSubject(project, reportDate, mailSubject);
+    const normalizedMailSubject = normalizeWeeklySubjectByAudience(activeAudience, project, reportDate, mailSubject);
     return {
       id: selectedReport?.id,
       projectId: project.id,
+      audience: activeAudience,
       reportDate,
       title: normalizedMailSubject,
-      content: ensureWeeklyReportContentSchema(state, project, {
+      content: (activeAudience === "customer" ? ensureCustomerWeeklyReportContentSchema : ensureWeeklyReportContentSchema)(state, project, {
         reportDate,
         projectOwner,
+        implementationPersonnel,
         implementationMode,
         projectStatus,
         thisWeekTaskIds,
@@ -2954,6 +3297,7 @@ export function WeeklyPage({
       }, content),
       generatedBy: "manual",
       projectOwner,
+      implementationPersonnel,
       implementationMode,
       projectStatus,
       thisWeekTaskIds,
@@ -2970,9 +3314,10 @@ export function WeeklyPage({
 
   const regenerateContent = () => {
     setContent(
-      buildWeeklyReportContent(state, project, {
+      (activeAudience === "customer" ? buildCustomerWeeklyReportContent : buildWeeklyReportContent)(state, project, {
         reportDate,
         projectOwner,
+        implementationPersonnel,
         implementationMode,
         projectStatus,
         thisWeekTaskIds,
@@ -2991,7 +3336,7 @@ export function WeeklyPage({
     const reportInput = buildReportInput({ mailDraftStatus: "local-draft", mailDraftMessage: "正在保存到邮箱草稿箱" });
     onSave(reportInput);
     try {
-      const draftSubject = reportInput.mailSubject || normalizeWeeklyMailSubject(project, reportDate, mailSubject);
+      const draftSubject = reportInput.mailSubject || normalizeWeeklySubjectByAudience(activeAudience, project, reportDate, mailSubject);
       const message = await saveEmailDraft(state.emailConfig, {
         to: recipientsTo,
         cc: recipientsCc,
@@ -3006,15 +3351,28 @@ export function WeeklyPage({
       setSending(false);
     }
   };
+  const workspaceClass = taskSourceOpen ? "task-source-open" : "task-source-closed";
+  const audienceTone = activeAudience === "customer" ? "customer" : "internal";
 
   return (
-    <section className={`weekly-workspace ${taskSourceOpen ? "task-source-open" : "task-source-closed"}`}>
+    <section className={`weekly-workspace ${workspaceClass}`}>
       <Card className="pad weekly-summary-panel">
-        <div className="weekly-summary-card">
+        <div className={`weekly-summary-card audience-${audienceTone}`}>
           <div className="weekly-summary-identity">
-            <span className="weekly-summary-eyebrow">项目周报</span>
+            <span className="weekly-summary-eyebrow">{weeklyAudienceLabel(activeAudience)}</span>
             <h3>{project.name}</h3>
             <p>{project.client}</p>
+          </div>
+
+          <div className="weekly-audience-switch" role="tablist" aria-label="周报受众">
+            <button type="button" className={activeAudience === "internal" ? "active" : ""} role="tab" aria-selected={activeAudience === "internal"} onClick={() => switchAudience("internal")}>
+              <ClipboardList aria-hidden="true" />
+              内部周报
+            </button>
+            <button type="button" className={activeAudience === "customer" ? "active" : ""} role="tab" aria-selected={activeAudience === "customer"} onClick={() => switchAudience("customer")}>
+              <UserCircle aria-hidden="true" />
+              客户周报
+            </button>
           </div>
 
           <div className="weekly-summary-chips">
@@ -3037,20 +3395,20 @@ export function WeeklyPage({
 
           <div className="weekly-metric-grid">
             <div className="weekly-metric-card">
-              <span>总人天</span>
-              <strong>{personDays.actual}/{personDayBudget}</strong>
+              <span>{activeAudience === "customer" ? "当前阶段" : "总人天"}</span>
+              <strong>{activeAudience === "customer" ? project.phase || "未维护" : `${personDays.actual}/${personDayBudget}`}</strong>
             </div>
             <div className="weekly-metric-card">
-              <span>子任务</span>
-              <strong>{allLeafSubtasks.length}</strong>
+              <span>{activeAudience === "customer" ? "本周成果" : "子任务"}</span>
+              <strong>{activeAudience === "customer" ? customerCompletedWorkCount : allLeafSubtasks.length}</strong>
             </div>
             <div className="weekly-metric-card risk">
-              <span>风险问题</span>
-              <strong>{openRisks.length}</strong>
+              <span>{activeAudience === "customer" ? "外部风险" : "风险问题"}</span>
+              <strong>{visibleRiskCount}</strong>
             </div>
             <div className="weekly-metric-card">
-              <span>本周更新</span>
-              <strong>{selectedThisWeekTasks.length}</strong>
+              <span>{activeAudience === "customer" ? "需配合" : "本周更新"}</span>
+              <strong>{activeAudience === "customer" ? customerAttentionCount : selectedThisWeekTasks.length}</strong>
             </div>
           </div>
 
@@ -3077,7 +3435,7 @@ export function WeeklyPage({
           ) : null}
 
           {settingsOpen ? (
-            <WeeklyConfigModal draft={configDraft} onChange={setConfigDraft} onSave={saveWeeklyConfig} onClose={() => setSettingsOpen(false)} />
+            <WeeklyConfigModal draft={configDraft} audience={activeAudience} onChange={setConfigDraft} onSave={saveWeeklyConfig} onClose={() => setSettingsOpen(false)} />
           ) : null}
           </div>
       </Card>
@@ -3087,9 +3445,9 @@ export function WeeklyPage({
           <div>
             <div className="weekly-document-type">
               <span aria-hidden="true" />
-              项目周报草稿
+              {weeklyAudienceLabel(activeAudience)}草稿
             </div>
-            <h3>{mailSubject || buildWeeklyMailSubject(project, reportDate)}</h3>
+            <h3>{mailSubject || buildDefaultWeeklySubject(activeAudience, project, reportDate)}</h3>
             <p>{reportDate} · {formatDateRange(week)} · 可编辑预览</p>
           </div>
           <div className="weekly-selected-strip">
@@ -3103,7 +3461,7 @@ export function WeeklyPage({
             <span>{projectStatus}</span>
           </div>
         </div>
-        <WeeklyDraftComposer content={content} onChange={setContent} />
+        <WeeklyDraftComposer content={content} audience={activeAudience} onChange={setContent} />
         <div className="weekly-draft-actions">
           <Button tone="ghost" onClick={regenerateContent}>
             <ClipboardList aria-hidden="true" />
@@ -3132,7 +3490,7 @@ export function WeeklyPage({
                   aria-selected={activeTaskSource === "thisWeek"}
                   onClick={() => setActiveTaskSource("thisWeek")}
                 >
-                  <span>本周任务来源</span>
+                  <span>{thisWeekSourceLabel}</span>
                   <strong>{selectedThisWeekTasks.length}</strong>
                 </button>
                 <button
@@ -3142,14 +3500,11 @@ export function WeeklyPage({
                   aria-selected={activeTaskSource === "nextWeek"}
                   onClick={() => setActiveTaskSource("nextWeek")}
                 >
-                  <span>下周计划来源</span>
+                  <span>{nextWeekSourceLabel}</span>
                   <strong>{selectedNextWeekTasks.length}</strong>
                 </button>
               </div>
-              <button type="button" className="weekly-task-reset" onClick={() => {
-                setThisWeekTaskIds(defaultThisWeekUpdatedTaskIds(state, project.id, week));
-                setNextWeekTaskIds(defaultNextWeekTaskIds(state, project.id, nextWeek));
-              }}>
+              <button type="button" className="weekly-task-reset" onClick={resetTaskSources}>
                 恢复默认
               </button>
               <button type="button" className="weekly-task-close" onClick={() => setTaskSourceOpen(false)} aria-label="收起任务来源">
@@ -3160,12 +3515,12 @@ export function WeeklyPage({
             <div className="weekly-task-source-buttons" aria-label="任务来源">
               <button type="button" className="weekly-task-source-button" onClick={() => openTaskSource("thisWeek")}>
                 <ChevronRight aria-hidden="true" />
-                <span>本周任务来源</span>
+                <span>{thisWeekSourceLabel}</span>
                 <strong>{selectedThisWeekTasks.length}</strong>
               </button>
               <button type="button" className="weekly-task-source-button next" onClick={() => openTaskSource("nextWeek")}>
                 <ChevronRight aria-hidden="true" />
-                <span>下周计划来源</span>
+                <span>{nextWeekSourceLabel}</span>
                 <strong>{selectedNextWeekTasks.length}</strong>
               </button>
             </div>
@@ -3184,24 +3539,24 @@ export function WeeklyPage({
             <div className="weekly-task-grid">
               {activeTaskSource === "thisWeek" ? (
                 <WeeklyTaskSelector
-                  title="本周任务来源"
+                  title={thisWeekSourceLabel}
                   description={activeTaskSourceDescription}
                   taskTree={weeklyTaskTree}
                   search={taskSearch}
                   selectedIds={thisWeekTaskIds}
                   state={state}
-                  onChange={setThisWeekTaskIds}
+                  onChange={updateThisWeekTaskIds}
                 />
               ) : (
                 <WeeklyTaskSelector
-                  title="下周计划来源"
+                  title={nextWeekSourceLabel}
                   description={activeTaskSourceDescription}
                   taskTree={weeklyTaskTree}
                   search={taskSearch}
                   allowTask={(task) => task.status !== "done"}
                   selectedIds={effectiveNextWeekTaskIds}
                   state={state}
-                  onChange={setNextWeekTaskIds}
+                  onChange={updateNextWeekTaskIds}
                 />
               )}
             </div>
@@ -3255,12 +3610,14 @@ export function WeeklyHistoryPage({ state, onPage }: { state: AppState; onPage: 
 
   const previewContent = useMemo(() => {
     if (!selectedReport) return "";
-    return ensureWeeklyReportContentSchema(
+    const ensureContent = selectedReport.audience === "customer" ? ensureCustomerWeeklyReportContentSchema : ensureWeeklyReportContentSchema;
+    return ensureContent(
       state,
       project,
       {
         reportDate: selectedReport.reportDate,
         projectOwner: selectedReport.projectOwner || project.owner,
+        implementationPersonnel: selectedReport.implementationPersonnel || selectedReport.projectOwner || project.owner,
         implementationMode: selectedReport.implementationMode,
         projectStatus: selectedReport.projectStatus,
         thisWeekTaskIds: selectedReport.thisWeekTaskIds || [],
@@ -3297,6 +3654,7 @@ export function WeeklyHistoryPage({ state, onPage }: { state: AppState; onPage: 
                 <strong>{report.reportDate}</strong>
                 <small>{report.mailSubject || report.title}</small>
               </span>
+              <Badge tone={report.audience === "customer" ? "primary" : ""}>{weeklyAudienceLabel(report.audience === "customer" ? "customer" : "internal")}</Badge>
               <Badge tone={weeklyArchiveTone(report.markdownArchiveStatus)}>{weeklyArchiveLabel(report.markdownArchiveStatus)}</Badge>
             </button>
           ))}
@@ -3314,9 +3672,10 @@ export function WeeklyHistoryPage({ state, onPage }: { state: AppState; onPage: 
                   历史周报
                 </div>
                 <h3>{selectedReport.mailSubject || selectedReport.title}</h3>
-                <p>{selectedReport.reportDate} · {weeklyMailDraftLabel(selectedReport.mailDraftStatus)}</p>
+                <p>{selectedReport.reportDate} · {weeklyAudienceLabel(selectedReport.audience === "customer" ? "customer" : "internal")} · {weeklyMailDraftLabel(selectedReport.mailDraftStatus)}</p>
               </div>
               <div className="weekly-selected-strip">
+                <span>{weeklyAudienceLabel(selectedReport.audience === "customer" ? "customer" : "internal")}</span>
                 <span>{selectedReport.projectStatus}</span>
                 <span>{selectedReport.implementationMode}</span>
                 <span>{weeklyArchiveLabel(selectedReport.markdownArchiveStatus)}</span>
@@ -3343,7 +3702,7 @@ export function WeeklyHistoryPage({ state, onPage }: { state: AppState; onPage: 
             </div>
 
             <div className="weekly-history-preview">
-              <WeeklyDraftPreview content={previewContent} />
+              <WeeklyDraftPreview content={previewContent} audience={selectedReport.audience === "customer" ? "customer" : "internal"} />
             </div>
           </>
         ) : (

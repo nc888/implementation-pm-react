@@ -42,6 +42,12 @@ export type WeeklyReportMarkdownSaveResult = {
   archivedAt: string;
 };
 
+export type ProjectCsvSaveResult = {
+  fileName: string;
+  filePath: string;
+  savedAt: string;
+};
+
 const deliverableDirectoryHandles = new Map<string, LocalDirectoryHandle>();
 const deliverableDirectoryPathLabels = new Map<string, string>();
 const deliverableDirectoryDbName = "implementation-pm-file-handles";
@@ -191,6 +197,11 @@ function normalizeMarkdownFileName(fileName: string) {
   return `${normalizedBase}.md`;
 }
 
+function normalizeCsvFileName(fileName: string) {
+  const normalizedBase = sanitizePathSegment((fileName || "项目数据").replace(/\.csv$/i, ""));
+  return `${normalizedBase}.csv`;
+}
+
 function parseAttachmentRef(attachmentPath: string | undefined, fallbackName: string | undefined) {
   if (!attachmentPath && !fallbackName) return null;
   const segments = normalizePath(attachmentPath || fallbackName || "")
@@ -289,6 +300,42 @@ export async function saveWeeklyReportMarkdownFile({
     fileName: safeFileName,
     filePath: `${pathLabel}/${weeklyFolderName}/${safeFileName}`,
     archivedAt,
+  };
+}
+
+export async function saveProjectCsvFile({
+  projectId,
+  storageLabel,
+  fileName,
+  content,
+}: {
+  projectId: string;
+  storageLabel?: string;
+  fileName: string;
+  content: string;
+}): Promise<ProjectCsvSaveResult> {
+  const record = await resolveWritableProjectDirectory(projectId);
+  const safeFileName = normalizeCsvFileName(fileName);
+
+  try {
+    const allowed = await ensureDirectoryWritePermission(record.handle);
+    if (!allowed) {
+      throw new Error("目录句柄权限已失效，请重新选择交付物保存路径。");
+    }
+    const fileHandle = await record.handle.getFileHandle(safeFileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(new Blob([`\uFEFF${content}`], { type: "text/csv;charset=utf-8" }));
+    await writable.close();
+  } catch (error) {
+    throw normalizeFileSystemError(error, "CSV 保存失败，请重新选择保存路径后重试。");
+  }
+
+  const pathLabel = record.pathLabel || storageLabel || record.handle.name;
+  const savedAt = new Date().toISOString();
+  return {
+    fileName: safeFileName,
+    filePath: `${pathLabel}/${safeFileName}`,
+    savedAt,
   };
 }
 

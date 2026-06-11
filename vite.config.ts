@@ -108,7 +108,7 @@ function escapeHtml(value: string) {
 
 function inlineMarkdownToHtml(value: string) {
   const parts: string[] = [];
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  const pattern = /(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(value))) {
@@ -116,6 +116,8 @@ function inlineMarkdownToHtml(value: string) {
     const token = match[0];
     if (token.startsWith("**")) {
       parts.push(`<strong style="font-weight:700;color:#1f2b3b">${escapeHtml(token.slice(2, -2))}</strong>`);
+    } else if (token.startsWith("~~")) {
+      parts.push(`<s style="text-decoration:line-through;color:#6b7280">${escapeHtml(token.slice(2, -2))}</s>`);
     } else {
       parts.push(`<code style="padding:1px 5px;border:1px solid #dbe6f3;border-radius:5px;background:#f7fbff;color:#3f73d8;font-size:12px">${escapeHtml(token.slice(1, -1))}</code>`);
     }
@@ -137,7 +139,7 @@ function parseMarkdownTableRow(line: string) {
 }
 
 function stripInlineMarkdownText(value: string) {
-  return value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
+  return value.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/~~([^~]+)~~/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
 }
 
 function extractPercent(value: string) {
@@ -218,38 +220,65 @@ function countWeeklyMailRowsInSection(content: string, sectionKeyword: string) {
   return count;
 }
 
+function weeklyMailRiskStats(content: string) {
+  const lines = content.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => /^#{1,4}\s+/.test(line.trim()) && line.includes("风险"));
+  if (headingIndex < 0) return { riskCount: 0, issueCount: 0, openRiskIssueCount: 0, totalRiskIssueCount: 0 };
+  const tableIndex = lines.findIndex((line, index) => index > headingIndex && isMarkdownTableStart(lines, index));
+  if (tableIndex < 0) return { riskCount: 0, issueCount: 0, openRiskIssueCount: 0, totalRiskIssueCount: 0 };
+  let index = tableIndex + 2;
+  let riskCount = 0;
+  let issueCount = 0;
+  let openRiskIssueCount = 0;
+  while (index < lines.length && lines[index].includes("|") && !markdownTableSeparatorPattern.test(lines[index])) {
+    const row = parseMarkdownTableRow(lines[index]);
+    const kind = stripInlineMarkdownText(row[0] || "");
+    const status = stripInlineMarkdownText(row[3] || "");
+    if (!/^暂无$/.test(kind)) {
+      if (kind.includes("风险")) riskCount += 1;
+      if (kind.includes("问题")) issueCount += 1;
+      if (status !== "关闭") openRiskIssueCount += 1;
+    }
+    index += 1;
+  }
+  return { riskCount, issueCount, openRiskIssueCount, totalRiskIssueCount: riskCount + issueCount };
+}
+
 function extractWeeklyMailVisualStats(content: string) {
   const progressMatch = content.match(/整体进度\s+\*\*(\d+(?:\.\d+)?)%\*\*/);
   const fallbackProgressMatch = content.match(/整体进度\s*(\d+(?:\.\d+)?)%/);
   const statusMatch = content.match(/项目状态为\s+\*\*([^*]+)\*\*/);
-  const taskCompletionMatch = content.match(/任务完成情况：已完成\s+(\d+)\/(\d+)\s+项，开放\s+(\d+)\s+项/);
+  const taskCompletionMatch = content.match(/任务完成情况：已完成\s+(\d+)\/(\d+)\s+项，\s*(?:(\d+)\s*个交付物未更新状态|开放\s+(\d+)\s+项)/);
   const thisWeekMatch = content.match(/本周已纳入\s+(\d+)\s+个/);
   const nextWeekMatch = content.match(/下周计划推进\s+(\d+)\s+个/);
   const progress = Number(progressMatch?.[1] || fallbackProgressMatch?.[1] || 0);
+  const doneCount = Number(taskCompletionMatch?.[1] || 0);
+  const totalCount = Number(taskCompletionMatch?.[2] || 0);
+  const riskStats = weeklyMailRiskStats(content);
   return {
     progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, Math.round(progress))) : 0,
     status: statusMatch?.[1] || "未维护",
-    doneCount: Number(taskCompletionMatch?.[1] || 0),
-    totalCount: Number(taskCompletionMatch?.[2] || 0),
-    openCount: Number(taskCompletionMatch?.[3] || 0),
+    doneCount,
+    totalCount,
+    openCount: Number(taskCompletionMatch?.[4] || Math.max(0, totalCount - doneCount)),
+    pendingDeliverableCount: Number(taskCompletionMatch?.[3] || 0),
     thisWeekCount: Number(thisWeekMatch?.[1] || 0),
     nextWeekCount: Number(nextWeekMatch?.[1] || 0),
-    riskCount: countWeeklyMailRowsInSection(content, "风险 / 问题"),
+    ...riskStats,
   };
 }
 
 function weeklyMailVisualSummary(content: string) {
   const stats = extractWeeklyMailVisualStats(content);
   const bars = [
-    ["本周任务", stats.thisWeekCount],
-    ["下周任务", stats.nextWeekCount],
-    ["风险问题", stats.riskCount],
+    ["本周任务", stats.thisWeekCount, stats.totalCount],
+    ["下周任务", stats.nextWeekCount, stats.openCount],
+    ["风险问题", stats.openRiskIssueCount, stats.totalRiskIssueCount],
   ] as const;
-  const maxValue = Math.max(1, ...bars.map(([, value]) => value));
   const analysisBars = bars
-    .map(([label, value]) => {
-      const width = Math.max(6, Math.round((value / maxValue) * 100));
-      return `<tr><td style="width:58px;padding:3px 8px 3px 0;color:#6b7280;font-size:12px;white-space:normal;word-break:break-word">${escapeHtml(label)}</td><td style="padding:3px 0"><span style="display:block;height:7px;overflow:hidden;border-radius:999px;background:#e5e7eb"><span style="display:block;width:${width}%;height:100%;border-radius:999px;background:#14b8a6"></span></span></td><td style="width:28px;padding:3px 0 3px 8px;color:#374151;font-size:12px;font-weight:800;text-align:right">${value}</td></tr>`;
+    .map(([label, value, total]) => {
+      const width = Math.max(6, Math.round((value / Math.max(1, total)) * 100));
+      return `<tr><td style="width:58px;padding:3px 8px 3px 0;color:#6b7280;font-size:12px;white-space:normal;word-break:break-word">${escapeHtml(label)}</td><td style="padding:3px 0"><span style="display:block;height:7px;overflow:hidden;border-radius:999px;background:#e5e7eb"><span style="display:block;width:${width}%;height:100%;border-radius:999px;background:#14b8a6"></span></span></td><td style="width:44px;padding:3px 0 3px 8px;color:#374151;font-size:12px;font-weight:800;text-align:right">${value}/${total}</td></tr>`;
     })
     .join("");
   const baseCardStyle =
@@ -258,7 +287,7 @@ function weeklyMailVisualSummary(content: string) {
   const centerCellStyle = "padding:0;text-align:center;vertical-align:middle";
   const analysisCellStyle = "padding:0;text-align:left;vertical-align:middle";
   const fillTableStyle = "width:100%;height:100%;border-collapse:collapse";
-  return `<div style="width:100%;max-width:100%;margin:12px 0 16px"><table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;max-width:100%;border-collapse:collapse;table-layout:fixed"><tr><td style="width:33.333%;padding:0 4px 0 0;vertical-align:top"><div style="${centeredCardStyle}"><table role="presentation" cellspacing="0" cellpadding="0" style="${fillTableStyle}"><tr><td style="${centerCellStyle}"><div style="display:inline-block;width:84px;height:84px;border-radius:999px;background:conic-gradient(#2563eb ${stats.progress}%, #e5e7eb 0);text-align:center;vertical-align:middle"><div style="display:inline-block;width:62px;height:62px;margin-top:11px;border-radius:999px;background:#ffffff;text-align:center"><div style="padding-top:16px;color:#111827;font-size:20px;font-weight:800;line-height:1">${stats.progress}%</div><div style="margin-top:3px;color:#6b7280;font-size:10px;font-weight:700;line-height:1">整体进度</div></div></div><div style="margin-top:9px;color:#6b7280;font-size:12px;line-height:1.45">已完成 <strong style="color:#111827;font-weight:800">${stats.doneCount}/${stats.totalCount}</strong> 项，开放 <strong style="color:#111827;font-weight:800">${stats.openCount}</strong> 项。</div></td></tr></table></div></td><td style="width:33.333%;padding:0 4px;vertical-align:top"><div style="${centeredCardStyle}"><table role="presentation" cellspacing="0" cellpadding="0" style="${fillTableStyle}"><tr><td style="${centerCellStyle}"><div style="margin:0 0 10px;color:#6b7280;font-size:12px">项目状态</div>${weeklyMailStatusPill(stats.status)}<div style="margin-top:10px;color:#6b7280;font-size:12px;line-height:1.45">打开风险 / 问题 ${stats.riskCount} 项。</div></td></tr></table></div></td><td style="width:33.333%;padding:0 0 0 4px;vertical-align:top"><div style="${baseCardStyle}"><table role="presentation" cellspacing="0" cellpadding="0" style="${fillTableStyle}"><tr><td style="${analysisCellStyle}"><div style="margin-bottom:8px;color:#6b7280;font-size:12px">本周分析</div><table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;max-width:100%;border-collapse:collapse;table-layout:fixed">${analysisBars}</table></td></tr></table></div></td></tr></table></div>`;
+  return `<div style="width:100%;max-width:100%;margin:12px 0 16px"><table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;max-width:100%;border-collapse:collapse;table-layout:fixed"><tr><td style="width:33.333%;padding:0 4px 0 0;vertical-align:top"><div style="${centeredCardStyle}"><table role="presentation" cellspacing="0" cellpadding="0" style="${fillTableStyle}"><tr><td style="${centerCellStyle}"><div style="display:inline-block;width:84px;height:84px;border-radius:999px;background:conic-gradient(#2563eb ${stats.progress}%, #e5e7eb 0);text-align:center;vertical-align:middle"><div style="display:inline-block;width:62px;height:62px;margin-top:11px;border-radius:999px;background:#ffffff;text-align:center"><div style="padding-top:16px;color:#111827;font-size:20px;font-weight:800;line-height:1">${stats.progress}%</div><div style="margin-top:3px;color:#6b7280;font-size:10px;font-weight:700;line-height:1">整体进度</div></div></div><div style="margin-top:9px;color:#6b7280;font-size:12px;line-height:1.45">已完成 <strong style="color:#111827;font-weight:800">${stats.doneCount}/${stats.totalCount}</strong> 项，<strong style="color:#111827;font-weight:800">${stats.pendingDeliverableCount}</strong> 个交付物未更新状态</div></td></tr></table></div></td><td style="width:33.333%;padding:0 4px;vertical-align:top"><div style="${centeredCardStyle}"><table role="presentation" cellspacing="0" cellpadding="0" style="${fillTableStyle}"><tr><td style="${centerCellStyle}"><div style="margin:0 0 10px;color:#6b7280;font-size:12px">项目状态</div>${weeklyMailStatusPill(stats.status)}<div style="margin-top:10px;color:#6b7280;font-size:12px;line-height:1.45">风险 ${stats.riskCount} 个，问题 ${stats.issueCount} 个</div></td></tr></table></div></td><td style="width:33.333%;padding:0 0 0 4px;vertical-align:top"><div style="${baseCardStyle}"><table role="presentation" cellspacing="0" cellpadding="0" style="${fillTableStyle}"><tr><td style="${analysisCellStyle}"><div style="margin-bottom:8px;color:#6b7280;font-size:12px">本周分析</div><table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;max-width:100%;border-collapse:collapse;table-layout:fixed">${analysisBars}</table></td></tr></table></div></td></tr></table></div>`;
 }
 
 function markdownToMailHtml(content: string) {

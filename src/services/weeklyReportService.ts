@@ -4,6 +4,7 @@ import {
   calcProjectPersonDays,
   calcStageProgress,
   compareTasksByPlan,
+  projectDeliverables,
   projectRisks,
   projectScope,
   projectTasks,
@@ -22,6 +23,7 @@ export type DateRange = {
 export type WeeklyReportBuildOptions = {
   reportDate: string;
   projectOwner?: string;
+  implementationPersonnel?: string;
   implementationMode: ProjectImplementationMode;
   projectStatus: WeeklyProjectStatus;
   thisWeekTaskIds: string[];
@@ -159,7 +161,8 @@ function scopeRow(item: ReturnType<typeof projectScope>[number]) {
     item.title || item.content || "未命名范围",
     item.personDayType,
     `${item.progress}%`,
-    `${item.actualPersonDays}/${item.estimatedPersonDays}`,
+    item.estimatedPersonDays,
+    item.actualPersonDays,
   ];
 }
 
@@ -169,13 +172,32 @@ function riskStatusText(status: ReturnType<typeof projectRisks>[number]["status"
   return "关闭";
 }
 
-function riskRow(item: ReturnType<typeof projectRisks>[number]) {
-  const kind = item.kind === "risk" ? "风险" : "问题";
-  return [kind, item.title, item.severity, riskStatusText(item.status), item.responsePlan || "未维护"];
+export function isCustomerVisibleRisk(item: ReturnType<typeof projectRisks>[number]) {
+  return item.kind === "risk" && item.riskVisibility === "external" && item.status !== "closed";
 }
 
-export function buildWeeklyMailSubject(project: Project, reportDate = localDateKey()) {
+function riskRow(item: ReturnType<typeof projectRisks>[number]) {
+  const kind = item.kind === "risk" ? "风险" : "问题";
+  const visibility = item.riskVisibility === "external" ? "外部风险" : "内部风险";
+  const strike = (value: string) => (item.status === "closed" ? `~~${value}~~` : value);
+  return [
+    strike(kind),
+    strike(visibility),
+    strike(item.title),
+    item.severity,
+    riskStatusText(item.status),
+    strike(item.responsePlan || "未维护"),
+    strike(item.internalHandling || "未维护"),
+    strike(item.customerAssistance || "-"),
+  ];
+}
+
+export function buildWeeklyMailSubject(project: Pick<Project, "name">, reportDate = localDateKey()) {
   return `【 项目周报 】${project.name}_${reportDate.replace(/-/g, "")}`;
+}
+
+export function buildWeeklyCustomerMailSubject(project: Pick<Project, "name">, reportDate = localDateKey()) {
+  return `【 项目进展周报 】${project.name}_${reportDate.replace(/-/g, "")}`;
 }
 
 function isLegacyDefaultWeeklySubject(subject: string, project: Pick<Project, "name">, reportDate: string) {
@@ -188,10 +210,18 @@ function isLegacyDefaultWeeklySubject(subject: string, project: Pick<Project, "n
   );
 }
 
-export function normalizeWeeklyMailSubject(project: Project, reportDate: string, subject?: string) {
+export function normalizeWeeklyMailSubject(project: Pick<Project, "name">, reportDate: string, subject?: string) {
   const trimmed = (subject || "").trim();
   if (!trimmed || isLegacyDefaultWeeklySubject(trimmed, project, reportDate)) {
     return buildWeeklyMailSubject(project, reportDate);
+  }
+  return trimmed;
+}
+
+export function normalizeWeeklyCustomerMailSubject(project: Pick<Project, "name">, reportDate: string, subject?: string) {
+  const trimmed = (subject || "").trim();
+  if (!trimmed || isLegacyDefaultWeeklySubject(trimmed, project, reportDate)) {
+    return buildWeeklyCustomerMailSubject(project, reportDate);
   }
   return trimmed;
 }
@@ -272,6 +302,17 @@ ${markdownTable(
       ["使用率", `${personDays.implementationUsageRate}%`, `${personDays.developmentUsageRate}%`, `${personDays.usageRate}%`],
     ],
     ["暂无", "-", "-", "-"],
+  )}`;
+}
+
+function weeklyProjectBasicInfoSection(project: Project, options: WeeklyReportBuildOptions) {
+  const projectOwner = options.projectOwner || project.owner || "未维护";
+  const implementationPersonnel = options.implementationPersonnel || project.owner || "未维护";
+  return `## 二、项目基本信息
+${markdownTable(
+    ["项目名称", "实施人员", "实施方式", "项目经理", "当前阶段", "当前里程碑"],
+    [[project.name, implementationPersonnel, options.implementationMode, projectOwner, project.phase || "未维护", project.nextMilestone || "未维护"]],
+    ["未维护", "未维护", options.implementationMode, "未维护", "未维护", "未维护"],
   )}`;
 }
 
@@ -380,6 +421,7 @@ export function ensureWeeklyReportContentSchema(state: AppState, project: Projec
   if (!nextContent) return buildWeeklyReportContent(state, project, options);
   const leafSubtasks = getLeafSubtasks(state, project.id);
   const selectedNextWeek = unfinishedTasks(tasksByIds(leafSubtasks, options.nextWeekTaskIds));
+  const metrics = calcProjectMetrics(state, project);
 
   const personDays = calcProjectPersonDays(state, project);
   if (/^##\s+三、人天、进度与状态总览/m.test(nextContent)) {
@@ -392,6 +434,7 @@ export function ensureWeeklyReportContentSchema(state: AppState, project: Projec
 
   nextContent = stripTopLevelSectionByKeyword(nextContent, "进度与状态");
   nextContent = stripTopLevelSectionByKeyword(nextContent, "本周交付物更新情况");
+  nextContent = replaceTopLevelSectionByKeyword(nextContent, "项目基本信息", weeklyProjectBasicInfoSection(project, options));
 
   nextContent = nextContent
     .replace(/^##\s+(?:四|五|六|七|八|九)、SOW 范围/gm, "## 四、SOW 范围")
@@ -401,9 +444,190 @@ export function ensureWeeklyReportContentSchema(state: AppState, project: Projec
   nextContent = replaceTopLevelSectionByKeyword(nextContent, "下周工作项", weeklyNextWeekTaskSection(state, selectedNextWeek));
 
   return nextContent
+    .replace(/任务完成情况：已完成\s+\d+\/\d+\s+项，开放\s+\d+\s+项。/g, `任务完成情况：已完成 ${metrics.done}/${projectTasks(state, project.id).length} 项，${metrics.pendingDeliverables} 个交付物未更新状态。`)
     .replace(/下周计划推进\s+\d+\s+个子任务/g, `下周计划推进 ${selectedNextWeek.length} 个子任务`)
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function customerStatusText(status: WeeklyProjectStatus) {
+  if (status === "延期") return "存在延期风险";
+  if (status === "暂停") return "暂停中";
+  if (status === "需关注") return "需重点关注";
+  if (status === "风险") return "存在风险";
+  return "正常推进";
+}
+
+function customerProgressState(progress: number) {
+  if (progress >= 100) return "已完成";
+  if (progress > 0) return "推进中";
+  return "待启动";
+}
+
+function shortList(items: string[], max = 4) {
+  const normalized = items.map((item) => item.trim()).filter(Boolean);
+  const visible = normalized.slice(0, max);
+  if (!visible.length) return "";
+  const hidden = normalized.length - visible.length;
+  return hidden > 0 ? `${visible.join("、")}等 ${normalized.length} 项` : visible.join("、");
+}
+
+function customerTaskLabel(state: AppState, task: Task) {
+  return `${task.title}（${stageLabel(state, task.stage, task.projectId)}）`;
+}
+
+function customerTaskSummary(state: AppState, tasks: Task[], max = 4) {
+  return shortList(tasks.map((task) => customerTaskLabel(state, task)), max);
+}
+
+function customerStageSummary(state: AppState, tasks: Task[]) {
+  const grouped = new Map<string, number>();
+  tasks.forEach((task) => {
+    const label = stageLabel(state, task.stage, task.projectId);
+    grouped.set(label, (grouped.get(label) || 0) + 1);
+  });
+  return shortList([...grouped.entries()].map(([label, count]) => `${label} ${count} 项`), 3);
+}
+
+function isClosedDeliverable(item: ReturnType<typeof projectDeliverables>[number]) {
+  return ["已归档", "已提交"].includes(item.status) || ["已验收", "内部确认"].includes(item.acceptance);
+}
+
+function deliverableDate(item: ReturnType<typeof projectDeliverables>[number]) {
+  return (item.attachmentUploadedAt || item.dueDate || "").slice(0, 10);
+}
+
+function customerDeliverableSummary(deliverables: ReturnType<typeof projectDeliverables>) {
+  if (!deliverables.length) return "当前未维护交付物清单。";
+  const closed = deliverables.filter(isClosedDeliverable);
+  const pending = deliverables.filter((item) => !isClosedDeliverable(item));
+  const pendingNames = shortList(pending.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")).map((item) => item.name), 4);
+  return [
+    `当前交付物共 ${deliverables.length} 项，已闭环 ${closed.length} 项，待确认 / 待验收 ${pending.length} 项。`,
+    pendingNames ? `近期需关注 ${pendingNames}。` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function customerTaskPlanTarget(task: Task) {
+  if (task.status === "customer") return "等待客户侧确认后继续推进";
+  if (task.status === "blocked") return "解除阻塞后恢复推进";
+  return "按计划推进并形成阶段结果";
+}
+
+function customerScopeRows(scopeItems: ReturnType<typeof projectScope>) {
+  return scopeItems.map((item) => [
+    item.title || item.content || "未命名范围",
+    customerProgressState(item.progress),
+    item.description || "按本期 SOW 范围推进",
+  ]);
+}
+
+function customerAttentionRows(state: AppState, project: Project, nextWeek: DateRange) {
+  const taskMap = new Map(projectTasks(state, project.id).map((task) => [task.id, task]));
+  const customerBlockedTasks = getLeafSubtasks(state, project.id)
+    .filter((task) => task.status === "customer" || task.status === "blocked")
+    .sort(compareTasksByPlan)
+    .slice(0, 4)
+    .map((task) => [
+      task.title,
+      task.status === "customer" ? "请客户侧确认所需条件或反馈结果" : "请协助确认阻塞原因和恢复路径",
+      "影响相关工作继续推进",
+    ]);
+  const pendingDeliverables = projectDeliverables(state, project.id)
+    .filter((item) => !isClosedDeliverable(item))
+    .filter((item) => !item.dueDate || item.dueDate <= nextWeek.end)
+    .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"))
+    .slice(0, 4);
+  const riskRows = projectRisks(state, project.id)
+    .filter(isCustomerVisibleRisk)
+    .slice(0, 3)
+    .map((item) => [
+      item.title,
+      item.customerAssistance || "请客户侧协助确认相关条件",
+      item.severity === "高" ? "可能影响关键节点，需优先处理" : "需持续关注，避免影响后续推进",
+    ]);
+  const deliverableRows = pendingDeliverables.map((item) => [
+    item.name,
+    `请协助确认${item.dueDate ? `（计划 ${formatDateShort(item.dueDate)} 前）` : ""}`,
+    item.linkedTaskId && taskMap.get(item.linkedTaskId) ? "用于支撑关联工作闭环" : "用于支撑后续确认与验收闭环",
+  ]);
+  return [...customerBlockedTasks, ...riskRows, ...deliverableRows].slice(0, 8);
+}
+
+function customerPlanRows(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
+  const leafSubtasks = getLeafSubtasks(state, project.id);
+  const explicitTasks = unfinishedTasks(tasksByIds(leafSubtasks, options.nextWeekTaskIds));
+  const plannedTasks = explicitTasks.slice(0, 8);
+  if (plannedTasks.length) {
+    return plannedTasks.map((task) => [
+      task.title,
+      stageLabel(state, task.stage, task.projectId),
+      customerTaskPlanTarget(task),
+    ]);
+  }
+  return [];
+}
+
+function customerWorkRows(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
+  const leafSubtasks = getLeafSubtasks(state, project.id);
+  const selectedTasks = tasksByIds(leafSubtasks, options.thisWeekTaskIds).slice(0, 10);
+  return selectedTasks.map((task) => {
+    const note =
+      task.status === "done"
+        ? "已完成阶段处理，并进入后续确认或衔接"
+        : task.status === "customer"
+          ? "已推进至客户侧确认环节，待反馈后继续闭环"
+          : task.status === "blocked"
+            ? "推进中存在待协同事项，项目组将持续跟进"
+            : "本周已推进，后续按计划继续同步";
+    return [task.title, stageLabel(state, task.stage, task.projectId), note];
+  });
+}
+
+function customerAttentionSection(state: AppState, project: Project, nextWeek: DateRange) {
+  return `## 二、需客户关注 / 配合事项
+${markdownTable(
+    ["事项", "期望配合", "影响说明"],
+    customerAttentionRows(state, project, nextWeek),
+    ["暂无", "暂无需客户配合事项", "-"],
+  )}`;
+}
+
+function customerNextPlanSection(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
+  return `## 三、下周计划
+${markdownTable(
+    ["计划事项", "所属阶段", "计划目标"],
+    customerPlanRows(state, project, options),
+    ["暂无", "待确认", "下周计划待进一步确认"],
+  )}`;
+}
+
+export function ensureCustomerWeeklyReportContentSchema(state: AppState, project: Project, options: WeeklyReportBuildOptions, content: string) {
+  let nextContent = sanitizeWeeklyReportContent(content);
+  if (!nextContent) return buildCustomerWeeklyReportContent(state, project, options);
+  const reportDateObject = new Date(`${options.reportDate}T00:00:00`);
+  const nextWeek = nextWeekRangeFor(reportDateObject);
+  nextContent = stripTopLevelSectionByKeyword(nextContent, "风险");
+  nextContent = replaceTopLevelSectionByKeyword(nextContent, "需客户关注", customerAttentionSection(state, project, nextWeek));
+  nextContent = replaceTopLevelSectionByKeyword(nextContent, "下周计划", customerNextPlanSection(state, project, options));
+  return nextContent.replace(/^##\s+四、下周计划/gm, "## 三、下周计划").trim();
+}
+
+export function buildCustomerWeeklyReportContent(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
+  const reportDateObject = new Date(`${options.reportDate}T00:00:00`);
+  const nextWeek = nextWeekRangeFor(reportDateObject);
+  const workRows = customerWorkRows(state, project, options);
+
+  return `## 一、本周工作内容
+${markdownTable(
+    ["工作内容", "所属阶段", "本周说明"],
+    workRows,
+    ["暂无", "待确认", "本周工作内容待进一步确认"],
+  )}
+
+${customerAttentionSection(state, project, nextWeek)}
+
+${customerNextPlanSection(state, project, options)}`;
 }
 
 export function buildWeeklyReportContent(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
@@ -417,40 +641,34 @@ export function buildWeeklyReportContent(state: AppState, project: Project, opti
     ? [...stageStats].sort((a, b) => b.progress - a.progress || b.total - a.total)[0]
     : null;
   const scopeItems = projectScope(state, project.id);
-  const openRisks = projectRisks(state, project.id).filter((item) => item.status !== "closed");
-  const projectOwner = options.projectOwner || project.owner || "未维护";
+  const allRisks = projectRisks(state, project.id);
   const statusSummary = [
     `本周项目状态为 **${options.projectStatus}**，整体进度 **${metrics.completionRate}%**。`,
-    `任务完成情况：已完成 ${metrics.done}/${projectTasks(state, project.id).length} 项，开放 ${metrics.open} 项。`,
+    `任务完成情况：已完成 ${metrics.done}/${projectTasks(state, project.id).length} 项，${metrics.pendingDeliverables} 个交付物未更新状态。`,
     `当前阶段为 **${project.phase || currentStage?.label || "未维护"}**，当前里程碑为 **${project.nextMilestone || "未维护"}**。`,
     `本周已纳入 ${selectedThisWeek.length} 个进度更新子任务，下周计划推进 ${selectedNextWeek.length} 个子任务。`,
-  ].join("\n");
+  ].join(" ");
 
   return `## 一、执行摘要
 ${statusSummary}
 
-## 二、项目基本信息
-${markdownTable(
-    ["项目名称", "客户名称", "实施方式", "负责人", "当前阶段", "当前里程碑", "项目状态"],
-    [[project.name, project.client, options.implementationMode, projectOwner, project.phase || "未维护", project.nextMilestone || "未维护", options.projectStatus]],
-    ["未维护", "未维护", options.implementationMode, "未维护", "未维护", "未维护", options.projectStatus],
-  )}
+${weeklyProjectBasicInfoSection(project, options)}
 
 ## 三、人天情况
 ${weeklyPersonDaySection(personDays).replace(/^##\s+三、人天情况\n/, "")}
 
 ## 四、SOW 范围
 ${markdownTable(
-    ["范围类别", "范围项", "人天类型", "进度", "人天消耗"],
+    ["范围类别", "范围内容", "人天类型", "进度", "预估人天", "实际人天"],
     scopeItems.map(scopeRow),
-    ["暂无", "暂无 SOW 范围记录", "-", "-", "-"],
+    ["暂无", "暂无 SOW 范围记录", "-", "-", "-", "-"],
   )}
 
 ## 五、风险 / 问题项跟踪
 ${markdownTable(
-    ["类型", "标题", "等级", "状态", "应对 / 下一步"],
-    openRisks.map(riskRow),
-    ["暂无", "暂无打开或跟踪中的风险 / 问题", "-", "-", "-"],
+    ["类型", "可见性", "标题", "等级", "状态", "应对 / 下一步", "内部处理", "需客户协助"],
+    allRisks.map(riskRow),
+    ["暂无", "-", "暂无风险 / 问题记录", "-", "-", "-", "-", "-"],
   )}
 
 ${weeklyThisWeekTaskSection(state, selectedThisWeek)}

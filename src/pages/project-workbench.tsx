@@ -30,6 +30,7 @@ import {
   RingChart,
   riskIssueMatchesSearch,
   riskStatusLabel,
+  riskVisibilityLabel,
   scopeItemMatchesSearch,
   statusColumns,
   statusCssClass,
@@ -375,11 +376,13 @@ function DashboardPageLegacy({ state, aiService }: { state: AppState; aiService:
                   <Badge>{projectName(state, item.projectId)}</Badge>
                   <Badge tone={item.kind === "risk" ? "warning" : "danger"}>{item.kind === "risk" ? "风险" : "问题"}</Badge>
                   <Badge tone={toneFor(item.severity)}>{item.severity}</Badge>
+                  <Badge tone={item.riskVisibility === "external" ? "warning" : "primary"}>{riskVisibilityLabel(item.riskVisibility)}</Badge>
                 </div>
                 <strong>{item.title}</strong>
                 <span className="muted">
                   {riskStatusLabel(item.status)} · {item.responsePlan}
                 </span>
+                {item.customerAssistance ? <span className="muted">需客户协助：{item.customerAssistance}</span> : null}
               </div>
             ))}
             {!openRisks.length ? <div className="empty compact">当前没有打开的风险或问题。</div> : null}
@@ -632,11 +635,14 @@ export function DashboardPage({ state, aiService }: { state: AppState; aiService
                   <div className="compact-signal-line">
                     <strong>{item.title}</strong>
                     <span className="micro-tag">{item.kind === "risk" ? "风险" : "问题"}</span>
+                    <span className="micro-tag">{riskVisibilityLabel(item.riskVisibility)}</span>
                     <span className={`severity-dot ${item.severity === "高" ? "high" : item.severity === "中" ? "medium" : "low"}`}>{item.severity}</span>
                   </div>
                   <p>
                     {projectName(state, item.projectId)} · {riskStatusLabel(item.status)}：{item.responsePlan}
                   </p>
+                  {item.internalHandling ? <p>内部处理：{item.internalHandling}</p> : null}
+                  {item.customerAssistance ? <p>需客户协助：{item.customerAssistance}</p> : null}
                 </div>
               ))}
               {!openRisks.length ? <div className="empty compact">当前没有打开的风险或问题。</div> : null}

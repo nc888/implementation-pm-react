@@ -68,7 +68,16 @@ export const deliverableMatchesSearch = (state: AppState, deliverable: Deliverab
 
 export const riskIssueMatchesSearch = (state: AppState, item: RiskIssue) => {
   const query = searchQuery(state);
-  return includesQuery(query, [item.kind === "risk" ? "风险" : "问题", item.title, item.severity, item.status, item.responsePlan]);
+  return includesQuery(query, [
+    item.kind === "risk" ? "风险" : "问题",
+    item.riskVisibility === "external" ? "外部风险" : "内部风险",
+    item.title,
+    item.severity,
+    item.status,
+    item.responsePlan,
+    item.internalHandling,
+    item.customerAssistance,
+  ]);
 };
 
 export const scopeItemMatchesSearch = (state: AppState, item: ScopeItem) => {
@@ -154,6 +163,8 @@ export const riskStatusLabel = (status: RiskIssue["status"]) => {
   if (status === "tracking") return "跟踪";
   return "关闭";
 };
+
+export const riskVisibilityLabel = (visibility: RiskIssue["riskVisibility"]) => (visibility === "external" ? "外部风险" : "内部风险");
 
 export const compareWorkItems = (a: Task, b: Task) => {
   const priorityWeight = { 高: 0, 中: 1, 低: 2 } as const;
@@ -268,7 +279,7 @@ export const tableSeparatorPattern = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+
 
 export function renderInlineMarkdown(text: string) {
   const nodes: Array<string | JSX.Element> = [];
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  const pattern = /(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text))) {
@@ -276,6 +287,8 @@ export function renderInlineMarkdown(text: string) {
     const token = match[0];
     if (token.startsWith("**")) {
       nodes.push(<strong key={`b-${match.index}`}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith("~~")) {
+      nodes.push(<s key={`s-${match.index}`}>{token.slice(2, -2)}</s>);
     } else {
       nodes.push(<code key={`c-${match.index}`}>{token.slice(1, -1)}</code>);
     }

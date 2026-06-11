@@ -1,6 +1,6 @@
 import { useState } from "react";
-import type { AppState, Deliverable, Project, RiskIssue, ScopeItem, Task, TaskStage, TaskStatus } from "../types";
-import { getProject, projectTasks, stageDefinitionsForState, taskStatusLabels } from "../services/contextBuilder";
+import type { AppState, Deliverable, Project, ProjectMilestone, RiskIssue, ScopeItem, Task, TaskStage, TaskStatus } from "../types";
+import { formatProjectMilestoneOption, getProject, normalizeProjectMilestones, projectMilestonesForState, projectTasks, stageDefinitionsForState, taskStatusLabels } from "../services/contextBuilder";
 import { Button } from "./ui";
 
 const taskStatuses: TaskStatus[] = ["todo", "doing", "customer", "blocked", "done"];
@@ -9,6 +9,7 @@ const healthValues: Project["health"][] = ["健康", "关注", "延期"];
 const scopeCategories: ScopeItem["category"][] = ["本期SOW范围", "变更增加范围", "不在本期范围"];
 const personDayTypes: ScopeItem["personDayType"][] = ["实施", "开发"];
 const riskKinds: RiskIssue["kind"][] = ["risk", "issue"];
+const riskVisibilities: RiskIssue["riskVisibility"][] = ["internal", "external"];
 const riskStatuses: RiskIssue["status"][] = ["open", "tracking", "closed"];
 const severities: RiskIssue["severity"][] = ["高", "中", "低"];
 
@@ -129,18 +130,20 @@ function descendantIds(tasks: Task[], taskId: string) {
   return ids;
 }
 
-function projectMilestoneOptions(state: AppState, projectId: string, currentValue: string) {
-  const options = state.deliverables
-    .filter((deliverable) => deliverable.projectId === projectId && /^M\d+-ACCEPT$/i.test(deliverable.code))
-    .sort((left, right) => left.dueDate.localeCompare(right.dueDate) || left.code.localeCompare(right.code))
-    .map((deliverable) => {
-      const milestoneCode = deliverable.code.replace(/-ACCEPT$/i, "");
-      const milestoneName = deliverable.name.replace(/验收标准$/, "");
-      const dueDate = deliverable.dueDate ? deliverable.dueDate.slice(5).replace("-", "-") : "";
-      return `${milestoneCode} ${milestoneName}${dueDate ? ` (${dueDate})` : ""}`;
-    });
+function milestoneDraftOptions(milestones: ProjectMilestone[], currentValue: string) {
+  const options = milestones.map(formatProjectMilestoneOption).filter(Boolean);
   const uniqueOptions = Array.from(new Set(options));
   return currentValue && !uniqueOptions.includes(currentValue) ? [currentValue, ...uniqueOptions] : uniqueOptions;
+}
+
+function newMilestoneDraft(index: number): ProjectMilestone {
+  return {
+    id: `milestone-${crypto.randomUUID()}`,
+    title: `M${index + 1} 里程碑`,
+    dueDate: "",
+    status: "未开始",
+    description: "",
+  };
 }
 
 export function ProjectDialog({
@@ -151,7 +154,7 @@ export function ProjectDialog({
 }: {
   state: AppState;
   item?: Project;
-  onSave: (project: Project) => void;
+  onSave: (project: Project, milestones: ProjectMilestone[]) => void;
   onClose: () => void;
 }) {
   const stageOptions = stageDefinitionsForState(state, item?.id);
@@ -170,7 +173,31 @@ export function ProjectDialog({
     estimatedImplementationPersonDays: 0,
     estimatedDevelopmentPersonDays: 0,
   };
-  const milestoneOptions = projectMilestoneOptions(state, defaults.id, defaults.nextMilestone);
+  const [nextMilestone, setNextMilestone] = useState(defaults.nextMilestone);
+  const [milestoneDrafts, setMilestoneDrafts] = useState<ProjectMilestone[]>(() =>
+    normalizeProjectMilestones(projectMilestonesForState(state, defaults.id)).map((milestone) => ({ ...milestone })),
+  );
+  const milestoneOptions = milestoneDraftOptions(milestoneDrafts, nextMilestone);
+
+  const patchMilestone = (milestoneId: string, patch: Partial<ProjectMilestone>) => {
+    const previous = milestoneDrafts.find((milestone) => milestone.id === milestoneId);
+    if (previous && nextMilestone === formatProjectMilestoneOption(previous)) {
+      setNextMilestone(formatProjectMilestoneOption({ ...previous, ...patch }));
+    }
+    setMilestoneDrafts((current) => current.map((milestone) => (milestone.id === milestoneId ? { ...milestone, ...patch } : milestone)));
+  };
+
+  const addMilestone = () => {
+    setMilestoneDrafts((current) => [...current, newMilestoneDraft(current.length)]);
+  };
+
+  const removeMilestone = (milestoneId: string) => {
+    const previous = milestoneDrafts.find((milestone) => milestone.id === milestoneId);
+    if (previous && nextMilestone === formatProjectMilestoneOption(previous)) {
+      setNextMilestone("");
+    }
+    setMilestoneDrafts((current) => current.filter((milestone) => milestone.id !== milestoneId));
+  };
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -202,11 +229,11 @@ export function ProjectDialog({
               startDate: String(form.get("startDate") || today()),
               endDate: String(form.get("endDate") || today()),
               progress: defaults.progress,
-              nextMilestone: String(form.get("nextMilestone") || "").trim(),
+              nextMilestone,
               description: String(form.get("description") || "").trim(),
               estimatedImplementationPersonDays: personDayValue(form.get("estimatedImplementationPersonDays")),
               estimatedDevelopmentPersonDays: personDayValue(form.get("estimatedDevelopmentPersonDays")),
-            });
+            }, normalizeProjectMilestones(milestoneDrafts));
           }}
         >
           <div className="form-grid">
@@ -244,7 +271,7 @@ export function ProjectDialog({
             </label>
             <label>
               下一里程碑
-              <select name="nextMilestone" defaultValue={defaults.nextMilestone}>
+              <select name="nextMilestone" value={nextMilestone} onChange={(event) => setNextMilestone(event.target.value)}>
                 <option value="">未设置</option>
                 {milestoneOptions.map((milestone) => (
                   <option key={milestone} value={milestone}>
@@ -273,6 +300,30 @@ export function ProjectDialog({
               项目说明
               <textarea name="description" defaultValue={defaults.description} />
             </label>
+            <section className="project-milestone-editor wide">
+              <div className="project-milestone-editor-head">
+                <div>
+                  <strong>关键里程碑</strong>
+                  <span>用于下一里程碑选择、项目导出和 AI 项目快照。</span>
+                </div>
+                <button type="button" className="button ghost" onClick={addMilestone}>
+                  新增里程碑
+                </button>
+              </div>
+              <div className="project-milestone-list">
+                {milestoneDrafts.map((milestone, index) => (
+                  <div className="project-milestone-row" key={milestone.id}>
+                    <span className="project-milestone-index">{index + 1}</span>
+                    <input value={milestone.title} onChange={(event) => patchMilestone(milestone.id, { title: event.target.value })} aria-label={`里程碑 ${index + 1} 名称`} />
+                    <input type="date" value={milestone.dueDate} onChange={(event) => patchMilestone(milestone.id, { dueDate: event.target.value })} aria-label={`里程碑 ${index + 1} 日期`} />
+                    <button type="button" className="button danger" onClick={() => removeMilestone(milestone.id)} aria-label={`删除里程碑 ${index + 1}`}>
+                      删除
+                    </button>
+                  </div>
+                ))}
+                {!milestoneDrafts.length ? <div className="empty compact">暂无里程碑。</div> : null}
+              </div>
+            </section>
           </div>
           <footer className="modal-actions">
             <Button tone="ghost" onClick={onClose}>
@@ -713,15 +764,19 @@ export function RiskIssueDialog({
 }) {
   const project = getProject(state);
   const tasks = projectTasks(state, project.id);
-  const defaults: RiskIssue = item || {
+  const defaults: RiskIssue = {
     id: crypto.randomUUID(),
     projectId: project.id,
     kind: riskKind || "risk",
     title: "",
     severity: "中",
     status: "open",
+    riskVisibility: "internal",
     responsePlan: "",
+    internalHandling: "",
+    customerAssistance: "",
     linkedTaskId: "",
+    ...(item || {}),
   };
 
   return (
@@ -742,6 +797,7 @@ export function RiskIssueDialog({
             event.preventDefault();
             const form = new FormData(event.currentTarget);
             const title = String(form.get("title") || "").trim();
+            const responsePlan = String(form.get("responsePlan") || "").trim();
             if (!title) return;
             onSave({
               ...defaults,
@@ -749,7 +805,10 @@ export function RiskIssueDialog({
               title,
               severity: String(form.get("severity") || "中") as RiskIssue["severity"],
               status: String(form.get("status") || "open") as RiskIssue["status"],
-              responsePlan: String(form.get("responsePlan") || "").trim(),
+              riskVisibility: String(form.get("riskVisibility") || "internal") as RiskIssue["riskVisibility"],
+              responsePlan,
+              internalHandling: String(form.get("internalHandling") || responsePlan).trim(),
+              customerAssistance: String(form.get("customerAssistance") || "").trim(),
               linkedTaskId: String(form.get("linkedTaskId") || ""),
             });
           }}
@@ -761,6 +820,16 @@ export function RiskIssueDialog({
                 {riskKinds.map((kind) => (
                   <option key={kind} value={kind}>
                     {kind === "risk" ? "风险" : "问题"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              可见性
+              <select name="riskVisibility" defaultValue={defaults.riskVisibility}>
+                {riskVisibilities.map((visibility) => (
+                  <option key={visibility} value={visibility}>
+                    {visibility === "external" ? "外部风险" : "内部风险"}
                   </option>
                 ))}
               </select>
@@ -803,6 +872,14 @@ export function RiskIssueDialog({
             <label className="wide">
               应对方案
               <textarea name="responsePlan" defaultValue={defaults.responsePlan} />
+            </label>
+            <label className="wide">
+              内部处理
+              <textarea name="internalHandling" defaultValue={defaults.internalHandling || defaults.responsePlan} />
+            </label>
+            <label className="wide">
+              需客户协助
+              <textarea name="customerAssistance" defaultValue={defaults.customerAssistance} />
             </label>
           </div>
           <footer className="modal-actions">

@@ -1,6 +1,14 @@
 import { defaultData } from "../seed";
-import { buildProjectSnapshot, createProjectStageConfig, normalizeProjectPhase, normalizeStageDefinitions, normalizeTaskStage } from "./contextBuilder";
-import { normalizeWeeklyMailSubject, sanitizeWeeklyReportContent } from "./weeklyReportService";
+import {
+  buildProjectSnapshot,
+  createProjectStageConfig,
+  milestonesFromDeliverables,
+  normalizeProjectMilestones,
+  normalizeProjectPhase,
+  normalizeStageDefinitions,
+  normalizeTaskStage,
+} from "./contextBuilder";
+import { normalizeWeeklyCustomerMailSubject, normalizeWeeklyMailSubject, sanitizeWeeklyReportContent } from "./weeklyReportService";
 import type {
   AiDraft,
   AiModelConfig,
@@ -11,6 +19,7 @@ import type {
   Project,
   ProjectStageConfig,
   ResourceAssessmentInputs,
+  RiskIssue,
   ScopeItem,
   Task,
   TaskStageDefinition,
@@ -18,6 +27,7 @@ import type {
   WeeklyMarkdownArchiveStatus,
   WeeklyProjectStatus,
   WeeklyReport,
+  WeeklyReportAudience,
   WeeklyReportInput,
   WeeklyReportPreference,
   WeeklyReportPreferenceInput,
@@ -46,7 +56,10 @@ export function migrateAppState(data: Partial<AppState>): AppState {
   const taskStages = normalizeStageDefinitions(sourceSchemaVersion >= 9 ? data.taskStages : undefined);
   const rawProjects = data.projects?.length ? data.projects : defaultData.projects;
   const migratedProjects = rawProjects.map((project) => migrateProject(project as Project, sourceSchemaVersion, taskStages));
-  const projectStageConfigs = normalizeProjectStageConfigs(data.projectStageConfigs, migratedProjects, taskStages);
+  const migratedDeliverables = (data.deliverables ?? defaultData.deliverables).map((deliverable) =>
+    migrateDeliverable(deliverable as Deliverable & { attachmentRequirement?: string }),
+  );
+  const projectStageConfigs = normalizeProjectStageConfigs(data.projectStageConfigs, migratedProjects, taskStages, migratedDeliverables);
   const projects = migratedProjects.map((project) => ({
     ...project,
     phase: normalizeProjectPhase(project.phase, stagesForProject(projectStageConfigs, taskStages, project.id)),
@@ -58,9 +71,10 @@ export function migrateAppState(data: Partial<AppState>): AppState {
   const scopeItems = (data.scopeItems?.length ? data.scopeItems : defaultData.scopeItems).map((scopeItem) =>
     migrateScopeItem(scopeItem as ScopeItem & { category?: string; personDayType?: string; title?: string; description?: string; content?: string }, sourceSchemaVersion),
   );
-  const deliverables = (data.deliverables ?? defaultData.deliverables).map((deliverable) =>
-    migrateDeliverable(deliverable as Deliverable & { attachmentRequirement?: string }),
+  const risksIssues = (data.risksIssues ?? defaultData.risksIssues).map((riskIssue) =>
+    migrateRiskIssue(riskIssue as Partial<RiskIssue> & { visibility?: string; customerSupport?: string; internalProcess?: string }),
   );
+  const deliverables = migratedDeliverables;
   const aiModelConfigs = normalizeAiModelConfigs(data.aiModelConfigs?.length ? data.aiModelConfigs : clone(defaultData.aiModelConfigs));
   const weeklyReports = (data.weeklyReports || defaultData.weeklyReports).map((report) => migrateWeeklyReport(report as Partial<WeeklyReport>));
   const weeklyReportPreferences =
@@ -79,13 +93,14 @@ export function migrateAppState(data: Partial<AppState>): AppState {
     projects,
     tasks,
     scopeItems,
+    risksIssues,
     deliverables,
     aiModelConfigs,
     weeklyReports,
     weeklyReportPreferences,
     emailConfig,
     deliveryWorkflows,
-    schemaVersion: 15,
+    schemaVersion: 18,
   };
 }
 
@@ -93,12 +108,17 @@ function stagesForProject(projectStageConfigs: ProjectStageConfig[], fallbackSta
   return projectStageConfigs.find((config) => config.projectId === projectId)?.stages || fallbackStages;
 }
 
-function normalizeProjectStageConfigs(configs: unknown, projects: Project[], fallbackStages: TaskStageDefinition[]): ProjectStageConfig[] {
+function normalizeProjectStageConfigs(configs: unknown, projects: Project[], fallbackStages: TaskStageDefinition[], deliverables: Deliverable[]): ProjectStageConfig[] {
   const source = Array.isArray(configs) ? (configs as Array<Partial<ProjectStageConfig>>) : [];
   const sourceByProjectId = new Map(source.filter((config) => config?.projectId).map((config) => [String(config.projectId), config]));
   return projects.map((project) => {
     const existing = sourceByProjectId.get(project.id);
-    return createProjectStageConfig(project.id, existing?.stages || fallbackStages, existing?.updatedAt || "");
+    const milestones = normalizeProjectMilestones([
+      ...(existing?.milestones || []),
+      ...milestonesFromDeliverables(deliverables, project.id),
+      ...(project.nextMilestone ? [project.nextMilestone] : []),
+    ]);
+    return createProjectStageConfig(project.id, existing?.stages || fallbackStages, existing?.updatedAt || "", milestones);
   });
 }
 
@@ -177,6 +197,42 @@ function migrateDeliverable(deliverable: Deliverable & { attachmentRequirement?:
   };
 }
 
+function normalizeRiskVisibility(value?: string): RiskIssue["riskVisibility"] {
+  return value === "external" ? "external" : "internal";
+}
+
+function normalizeRiskKind(value?: string): RiskIssue["kind"] {
+  return value === "issue" ? "issue" : "risk";
+}
+
+function normalizeRiskSeverity(value?: string): RiskIssue["severity"] {
+  if (value === "高" || value === "低") return value;
+  return "中";
+}
+
+function normalizeRiskStatus(value?: string): RiskIssue["status"] {
+  if (value === "tracking" || value === "closed") return value;
+  return "open";
+}
+
+function migrateRiskIssue(riskIssue: Partial<RiskIssue> & { visibility?: string; customerSupport?: string; internalProcess?: string }): RiskIssue {
+  const fallback = defaultData.risksIssues.find((item) => item.id === riskIssue.id);
+  const responsePlan = String(riskIssue.responsePlan ?? fallback?.responsePlan ?? "");
+  return {
+    id: String(riskIssue.id || fallback?.id || crypto.randomUUID()),
+    projectId: String(riskIssue.projectId || fallback?.projectId || defaultData.projects[0]?.id || ""),
+    kind: normalizeRiskKind(riskIssue.kind || fallback?.kind),
+    title: String(riskIssue.title || fallback?.title || ""),
+    severity: normalizeRiskSeverity(riskIssue.severity || fallback?.severity),
+    status: normalizeRiskStatus(riskIssue.status || fallback?.status),
+    riskVisibility: normalizeRiskVisibility(riskIssue.riskVisibility || riskIssue.visibility || fallback?.riskVisibility),
+    responsePlan,
+    internalHandling: String(riskIssue.internalHandling ?? riskIssue.internalProcess ?? fallback?.internalHandling ?? responsePlan),
+    customerAssistance: String(riskIssue.customerAssistance ?? riskIssue.customerSupport ?? fallback?.customerAssistance ?? ""),
+    linkedTaskId: String(riskIssue.linkedTaskId || fallback?.linkedTaskId || ""),
+  };
+}
+
 function normalizeWeeklyProjectStatus(value?: string): WeeklyProjectStatus {
   if (value === "延期" || value === "暂停" || value === "需关注" || value === "风险") return value;
   return "健康";
@@ -191,20 +247,31 @@ function normalizeWeeklyMarkdownArchiveStatus(value?: string): WeeklyMarkdownArc
   return "not-archived";
 }
 
+function normalizeWeeklyReportAudience(value?: string): WeeklyReportAudience {
+  return value === "customer" ? "customer" : "internal";
+}
+
+function normalizeWeeklyReportSubject(project: Project, reportDate: string, subject: string | undefined, audience: WeeklyReportAudience) {
+  return audience === "customer" ? normalizeWeeklyCustomerMailSubject(project, reportDate, subject) : normalizeWeeklyMailSubject(project, reportDate, subject);
+}
+
 function migrateWeeklyReport(report: Partial<WeeklyReport>): WeeklyReport {
   const project = defaultData.projects.find((item) => item.id === report.projectId) || defaultData.projects[0];
   const createdAt = report.createdAt || new Date().toISOString();
   const reportDate = report.reportDate || createdAt.slice(0, 10) || localDateKey();
-  const subject = normalizeWeeklyMailSubject(project, reportDate, report.mailSubject || report.title);
+  const audience = normalizeWeeklyReportAudience(report.audience);
+  const subject = normalizeWeeklyReportSubject(project, reportDate, report.mailSubject || report.title, audience);
   const fallbackSnapshot = buildProjectSnapshot(defaultData, project, "weekly-report");
   return {
     id: report.id || crypto.randomUUID(),
     projectId: report.projectId || project.id,
+    audience,
     reportDate,
-    title: normalizeWeeklyMailSubject(project, reportDate, report.title || subject),
+    title: normalizeWeeklyReportSubject(project, reportDate, report.title || subject, audience),
     content: sanitizeWeeklyReportContent(report.content || ""),
     generatedBy: report.generatedBy === "manual" ? "manual" : "ai",
     projectOwner: report.projectOwner || project.owner || "",
+    implementationPersonnel: (report as Partial<WeeklyReport>).implementationPersonnel || report.projectOwner || project.owner || "",
     implementationMode: normalizeProjectImplementationMode(report.implementationMode),
     projectStatus: normalizeWeeklyProjectStatus(report.projectStatus),
     thisWeekTaskIds: Array.isArray(report.thisWeekTaskIds) ? report.thisWeekTaskIds : [],
@@ -244,10 +311,13 @@ function migrateWeeklyReportPreference(preference: Partial<WeeklyReportPreferenc
   return {
     projectId: preference.projectId || project.id,
     projectOwner: preference.projectOwner || project.owner || "",
+    implementationPersonnel: preference.implementationPersonnel || preference.projectOwner || project.owner || "",
     implementationMode: normalizeProjectImplementationMode(preference.implementationMode),
     projectStatus: normalizeWeeklyProjectStatus(preference.projectStatus),
     recipientsTo: preference.recipientsTo || "",
     recipientsCc: preference.recipientsCc || "",
+    customerRecipientsTo: preference.customerRecipientsTo || "",
+    customerRecipientsCc: preference.customerRecipientsCc || "",
     mailSubjectTemplate: normalizeWeeklyMailSubjectTemplate(preference.mailSubjectTemplate, project),
     updatedAt: preference.updatedAt || new Date().toISOString(),
   };
@@ -266,23 +336,45 @@ function normalizeWeeklyReportPreferences(preferences: Array<Partial<WeeklyRepor
 }
 
 function deriveWeeklyReportPreferences(reports: WeeklyReport[]): WeeklyReportPreference[] {
-  const latestByProject = new Map<string, WeeklyReport>();
+  const latestByProject = new Map<
+    string,
+    {
+      latest: WeeklyReport;
+      internal?: WeeklyReport;
+      customer?: WeeklyReport;
+    }
+  >();
+  const isLaterReport = (candidate: WeeklyReport, current?: WeeklyReport) =>
+    !current ||
+    candidate.reportDate.localeCompare(current.reportDate) > 0 ||
+    (candidate.reportDate === current.reportDate && candidate.updatedAt.localeCompare(current.updatedAt) >= 0);
+
   reports.forEach((report) => {
     const existing = latestByProject.get(report.projectId);
-    if (!existing || report.reportDate.localeCompare(existing.reportDate) > 0 || (report.reportDate === existing.reportDate && report.updatedAt.localeCompare(existing.updatedAt) > 0)) {
-      latestByProject.set(report.projectId, report);
+    const next = existing || { latest: report };
+    if (isLaterReport(report, next.latest)) {
+      next.latest = report;
     }
+    if (normalizeWeeklyReportAudience(report.audience) === "customer") {
+      if (isLaterReport(report, next.customer)) next.customer = report;
+    } else {
+      if (isLaterReport(report, next.internal)) next.internal = report;
+    }
+    latestByProject.set(report.projectId, next);
   });
-  return [...latestByProject.values()].map((report) =>
+  return [...latestByProject.values()].map(({ latest, internal, customer }) =>
     migrateWeeklyReportPreference({
-      projectId: report.projectId,
-      implementationMode: report.implementationMode,
-      projectStatus: report.projectStatus,
-      projectOwner: report.projectOwner,
-      recipientsTo: report.recipientsTo,
-      recipientsCc: report.recipientsCc,
-      mailSubjectTemplate: weeklyMailSubjectToTemplate(report.mailSubject, report.reportDate),
-      updatedAt: report.updatedAt,
+      projectId: latest.projectId,
+      implementationMode: latest.implementationMode,
+      projectStatus: latest.projectStatus,
+      projectOwner: latest.projectOwner,
+      implementationPersonnel: latest.implementationPersonnel,
+      recipientsTo: internal?.recipientsTo || "",
+      recipientsCc: internal?.recipientsCc || "",
+      customerRecipientsTo: customer?.recipientsTo || "",
+      customerRecipientsCc: customer?.recipientsCc || "",
+      mailSubjectTemplate: internal ? weeklyMailSubjectToTemplate(internal.mailSubject, internal.reportDate) : "",
+      updatedAt: latest.updatedAt,
     }),
   );
 }
@@ -553,21 +645,24 @@ function createBaseRepository(storageLabel: string, persistence: Pick<ProjectRep
       const now = new Date().toISOString();
       const project = next.projects.find((item) => item.id === report.projectId) || next.projects[0];
       const reportDate = report.reportDate || localDateKey();
+      const audience = normalizeWeeklyReportAudience(report.audience);
       const existingIndex = next.weeklyReports.findIndex((item) =>
-        report.id ? item.id === report.id : item.projectId === report.projectId && item.reportDate === reportDate,
+        report.id ? item.id === report.id : item.projectId === report.projectId && item.reportDate === reportDate && normalizeWeeklyReportAudience(item.audience) === audience,
       );
       const existing = existingIndex >= 0 ? next.weeklyReports[existingIndex] : null;
-      const subject = normalizeWeeklyMailSubject(project, reportDate, report.mailSubject || report.title);
+      const subject = normalizeWeeklyReportSubject(project, reportDate, report.mailSubject || report.title, audience);
       const weeklyReport: WeeklyReport = {
         ...(existing || {}),
         ...report,
         id: existing?.id || report.id || crypto.randomUUID(),
         projectId: report.projectId,
+        audience,
         reportDate,
-        title: normalizeWeeklyMailSubject(project, reportDate, report.title || subject),
+        title: normalizeWeeklyReportSubject(project, reportDate, report.title || subject, audience),
         content: sanitizeWeeklyReportContent(report.content),
         generatedBy: report.generatedBy || "manual",
         projectOwner: report.projectOwner ?? existing?.projectOwner ?? project.owner ?? "",
+        implementationPersonnel: report.implementationPersonnel ?? existing?.implementationPersonnel ?? report.projectOwner ?? existing?.projectOwner ?? project.owner ?? "",
         implementationMode: normalizeProjectImplementationMode(report.implementationMode),
         projectStatus: normalizeWeeklyProjectStatus(report.projectStatus),
         thisWeekTaskIds: report.thisWeekTaskIds || [],
@@ -593,16 +688,32 @@ function createBaseRepository(storageLabel: string, persistence: Pick<ProjectRep
         next.weeklyReports.push(weeklyReport);
       }
       next.weeklyReports.sort((a, b) => b.reportDate.localeCompare(a.reportDate) || b.updatedAt.localeCompare(a.updatedAt));
+      const existingPreference = next.weeklyReportPreferences.find((item) => item.projectId === weeklyReport.projectId);
+      const recipientPreference =
+        weeklyReport.audience === "customer"
+          ? {
+              recipientsTo: existingPreference?.recipientsTo || "",
+              recipientsCc: existingPreference?.recipientsCc || "",
+              customerRecipientsTo: weeklyReport.recipientsTo,
+              customerRecipientsCc: weeklyReport.recipientsCc,
+              mailSubjectTemplate: existingPreference?.mailSubjectTemplate || "",
+            }
+          : {
+              recipientsTo: weeklyReport.recipientsTo,
+              recipientsCc: weeklyReport.recipientsCc,
+              customerRecipientsTo: existingPreference?.customerRecipientsTo || "",
+              customerRecipientsCc: existingPreference?.customerRecipientsCc || "",
+              mailSubjectTemplate: weeklyMailSubjectToTemplate(weeklyReport.mailSubject, weeklyReport.reportDate),
+            };
       applyWeeklyReportPreference(
         next,
         {
           projectId: weeklyReport.projectId,
           projectOwner: weeklyReport.projectOwner,
+          implementationPersonnel: weeklyReport.implementationPersonnel,
           implementationMode: weeklyReport.implementationMode,
           projectStatus: weeklyReport.projectStatus,
-          recipientsTo: weeklyReport.recipientsTo,
-          recipientsCc: weeklyReport.recipientsCc,
-          mailSubjectTemplate: weeklyMailSubjectToTemplate(weeklyReport.mailSubject, weeklyReport.reportDate),
+          ...recipientPreference,
         },
         now,
       );

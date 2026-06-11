@@ -10,6 +10,7 @@ import {
   createProjectStageConfig,
   getProject,
   normalizeProjectPhase,
+  normalizeProjectMilestones,
   normalizeStageDefinitions,
   normalizeTaskStage,
   projectTasks,
@@ -38,7 +39,7 @@ import { loadAiConfigFromFile } from "./services/aiConfigFile";
 import { recordAiGenerationRun } from "./services/aiGenerationAudit";
 import { assistantSessionMessages, assistantSessionProjectId, normalizeAssistantScope } from "./services/assistantSessions";
 import { moveDeliverableAttachmentToStage, saveWeeklyReportMarkdownFile } from "./services/deliverableFileStorage";
-import { localDateKey, normalizeWeeklyMailSubject } from "./services/weeklyReportService";
+import { localDateKey, normalizeWeeklyCustomerMailSubject, normalizeWeeklyMailSubject } from "./services/weeklyReportService";
 import {
   applyTaskCommandPlan,
   buildTaskCommandExtractionMessages,
@@ -47,6 +48,15 @@ import {
   looksLikeTaskCommandRequest,
   parseTaskCommandPlan,
 } from "./services/aiTaskCommandService";
+import {
+  applyProjectDataCommandPlan,
+  buildAssistantDataSnapshot,
+  buildProjectDataCommandExtractionMessages,
+  formatProjectDataCommandResult,
+  inferRuleBasedProjectDataCommandPlan,
+  looksLikeProjectDataCommandRequest,
+  parseProjectDataCommandPlan,
+} from "./services/assistantProjectDataService";
 import type {
   AiModelConfig,
   AppState,
@@ -56,6 +66,7 @@ import type {
   EmailConfig,
   PageKey,
   Project,
+  ProjectMilestone,
   RiskIssue,
   ScopeItem,
   SowInput,
@@ -87,26 +98,6 @@ function mergeLegacyAiConfig(state: AppState, config: AiModelConfig): AppState {
   };
 }
 
-function compactAssistantSnapshot(snapshot: ReturnType<typeof buildProjectSnapshot>) {
-  const tasks = snapshot.tasks || [];
-  const risks = snapshot.risks || [];
-  const deliverables = snapshot.deliverables || [];
-  const activeTasks = tasks.filter((task) => task.status !== "done");
-  const openRisks = risks.filter((risk) => risk.status !== "closed");
-  return {
-    ...snapshot,
-    compactedForAi: true,
-    omittedCounts: {
-      tasks: Math.max(0, tasks.length - Math.min(activeTasks.length, 80)),
-      risks: Math.max(0, risks.length - Math.min(openRisks.length, 40)),
-      deliverables: Math.max(0, deliverables.length - Math.min(deliverables.length, 40)),
-    },
-    tasks: activeTasks.slice(0, 80),
-    risks: openRisks.slice(0, 40),
-    deliverables: deliverables.slice(0, 40),
-  };
-}
-
 function backupFileSegment(value: string) {
   return value
     .trim()
@@ -122,37 +113,8 @@ function backupTimestamp(date = new Date()) {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function buildAllProjectsAssistantSnapshot(state: AppState) {
-  const projectSnapshots = state.projects.map((project) => compactAssistantSnapshot(buildProjectSnapshot(state, project, "chat")));
-  return {
-    schemaVersion: "1.0",
-    purpose: "chat",
-    scope: "all-projects",
-    generatedAt: new Date().toISOString(),
-    totals: {
-      projects: projectSnapshots.length,
-      totalTasks: projectSnapshots.reduce((sum, snapshot) => sum + snapshot.metrics.totalTasks, 0),
-      openTasks: projectSnapshots.reduce((sum, snapshot) => sum + snapshot.metrics.open, 0),
-      doneTasks: projectSnapshots.reduce((sum, snapshot) => sum + snapshot.metrics.done, 0),
-      blockedTasks: projectSnapshots.reduce((sum, snapshot) => sum + snapshot.metrics.blocked, 0),
-      customerTasks: projectSnapshots.reduce((sum, snapshot) => sum + snapshot.metrics.customer, 0),
-      overdueTasks: projectSnapshots.reduce((sum, snapshot) => sum + snapshot.metrics.overdue, 0),
-      openHighRisks: projectSnapshots.reduce((sum, snapshot) => sum + snapshot.metrics.openHighRisks, 0),
-      pendingDeliverables: projectSnapshots.reduce((sum, snapshot) => sum + snapshot.metrics.pendingDeliverables, 0),
-    },
-    projects: projectSnapshots.map((snapshot) => ({
-      project: snapshot.project,
-      metrics: snapshot.metrics,
-      omittedCounts: snapshot.omittedCounts,
-      tasks: snapshot.tasks,
-      risks: snapshot.risks,
-      deliverables: snapshot.deliverables,
-    })),
-  };
-}
-
 function buildAssistantSnapshot(state: AppState, project: Project, scope: AssistantScope) {
-  return scope === "all" ? buildAllProjectsAssistantSnapshot(state) : compactAssistantSnapshot(buildProjectSnapshot(state, project, "chat"));
+  return buildAssistantDataSnapshot(state, project, scope);
 }
 
 export function App() {
@@ -444,15 +406,21 @@ export function App() {
     notify("范围进度已更新。", "primary");
   };
 
-  const saveProject = (project: Project) => {
+  const saveProject = (project: Project, milestones?: ProjectMilestone[]) => {
     const exists = state.projects.some((item) => item.id === project.id);
     setState((current) => {
       if (!current) return current;
       const projects = exists ? current.projects.map((item) => (item.id === project.id ? project : item)) : [...current.projects, project];
+      const shouldSaveMilestones = Array.isArray(milestones);
+      const normalizedMilestones = shouldSaveMilestones ? normalizeProjectMilestones(milestones) : [];
       const projectStageConfigs =
-        exists || current.projectStageConfigs.some((item) => item.projectId === project.id)
-          ? current.projectStageConfigs
-          : [...current.projectStageConfigs, createProjectStageConfig(project.id, current.taskStages, new Date().toISOString())];
+        current.projectStageConfigs.some((item) => item.projectId === project.id)
+          ? current.projectStageConfigs.map((config) =>
+              config.projectId === project.id && shouldSaveMilestones
+                ? { ...config, milestones: normalizedMilestones, updatedAt: new Date().toISOString() }
+                : config,
+            )
+          : [...current.projectStageConfigs, createProjectStageConfig(project.id, current.taskStages, new Date().toISOString(), normalizedMilestones)];
       return {
         ...current,
         projects,
@@ -703,10 +671,15 @@ export function App() {
     const projectId = reportInput.projectId || project.id;
     const targetProject = state.projects.find((item) => item.id === projectId) || project;
     const reportDate = reportInput.reportDate || localDateKey();
-    const mailSubject = normalizeWeeklyMailSubject(targetProject, reportDate, reportInput.mailSubject || reportInput.title);
+    const audience = reportInput.audience === "customer" ? "customer" : "internal";
+    const mailSubject =
+      audience === "customer"
+        ? normalizeWeeklyCustomerMailSubject(targetProject, reportDate, reportInput.mailSubject || reportInput.title)
+        : normalizeWeeklyMailSubject(targetProject, reportDate, reportInput.mailSubject || reportInput.title);
     const normalizedReportInput: WeeklyReportInput = {
       ...reportInput,
       projectId,
+      audience,
       reportDate,
       title: mailSubject,
       mailSubject,
@@ -837,17 +810,53 @@ export function App() {
       return true;
     };
 
-    const rulePlan = inferRuleBasedTaskCommandPlan(trimmed);
-    if (rulePlan && executeTaskCommandPlan(rulePlan)) {
-      return;
-    }
+    const executeProjectDataCommandPlan = (
+      plan: ReturnType<typeof parseProjectDataCommandPlan> | NonNullable<ReturnType<typeof inferRuleBasedProjectDataCommandPlan>>,
+    ) => {
+      if (!plan || plan.mode !== "execute" || !plan.actions.length) return false;
+      const commandProjectId = assistantScope === "all" ? "all" : project.id;
+      const previewExecution = applyProjectDataCommandPlan(state, commandProjectId, plan);
+      setState((current) => (current ? applyProjectDataCommandPlan(current, commandProjectId, plan).state : current));
+      updateAssistantReply(formatProjectDataCommandResult(plan, previewExecution));
+      notify(
+        previewExecution.changedRecords.length ? `AI 已更新 ${previewExecution.changedRecords.length} 条项目数据。` : "AI 没有找到可更新的数据。",
+        previewExecution.changedRecords.length ? "success" : "warning",
+      );
+      return true;
+    };
+
+    const ruleTaskPlan = inferRuleBasedTaskCommandPlan(trimmed);
+    const ruleProjectPlan = inferRuleBasedProjectDataCommandPlan(trimmed);
 
     if (!config) {
-      updateAssistantReply("未找到默认模型配置。请先在设置页的模型设置中创建并测试远程模型配置。");
+      if (ruleProjectPlan && executeProjectDataCommandPlan(ruleProjectPlan)) return;
+      if (ruleTaskPlan && executeTaskCommandPlan(ruleTaskPlan)) return;
+      updateAssistantReply(aiService.reply(state, trimmed));
       return;
     }
 
     try {
+      if (looksLikeProjectDataCommandRequest(trimmed)) {
+        const commandRaw = await callConfiguredModel(
+          config,
+          buildProjectDataCommandExtractionMessages(state, project, trimmed, assistantScope),
+          { requireProjectDataConsent: true, maxTokens: 2200, timeoutMs: 120_000 },
+        );
+        const commandPlan = parseProjectDataCommandPlan(commandRaw);
+        if (commandPlan && commandPlan.mode === "execute" && commandPlan.actions.length) {
+          executeProjectDataCommandPlan(commandPlan);
+          return;
+        }
+        if (ruleProjectPlan && executeProjectDataCommandPlan(ruleProjectPlan)) {
+          return;
+        }
+
+        if (!looksLikeTaskCommandRequest(trimmed)) {
+          updateAssistantReply("我识别到这是项目数据变更指令，但没有解析出可执行的数据更新。请明确要改的对象、字段和新值。");
+          return;
+        }
+      }
+
       if (looksLikeTaskCommandRequest(trimmed)) {
         const commandRaw = await callConfiguredModel(
           config,
@@ -855,8 +864,11 @@ export function App() {
           { requireProjectDataConsent: true, maxTokens: 1200, timeoutMs: 90_000 },
         );
         const commandPlan = parseTaskCommandPlan(commandRaw);
-        if (commandPlan && commandPlan.mode === "execute") {
+        if (commandPlan && commandPlan.mode === "execute" && commandPlan.actions.length) {
           executeTaskCommandPlan(commandPlan);
+          return;
+        }
+        if (ruleTaskPlan && executeTaskCommandPlan(ruleTaskPlan)) {
           return;
         }
         updateAssistantReply("我识别到这是项目数据变更指令，但没有解析出可执行的任务更新。请明确任务名称、状态或日期。");
@@ -924,7 +936,7 @@ export function App() {
           {
             role: "system",
             content:
-              `你是软件实施项目管理助手。只能基于用户提供的${assistantScope === "all" ? "所有项目" : "当前项目"}快照和对话上下文回答，不要编造快照之外的项目事实。默认回答保持中等简洁：先给 1 句结论，再给 4-6 条要点或行动建议；每条不超过 55 个字；总字数控制在 350-500 字。除非用户明确要求详细分析，不要展开长背景、过程推导或重复大段快照数据。使用中文。`,
+              `你是软件实施项目管理助手。只能基于用户提供的${assistantScope === "all" ? "所有项目" : "当前项目"}完整快照和对话上下文回答，不要编造快照之外的项目事实。快照中包含项目基本信息、健康分、阶段/里程碑、任务、SOW范围、交付物、风险问题、周报和交付流程数据。普通问答模式不能声称已经修改项目数据；只有系统返回了本地执行结果时，才可以说“已更新/已修改”。默认回答保持中等简洁：先给 1 句结论，再给 4-6 条要点或行动建议；每条不超过 55 个字；总字数控制在 350-500 字。除非用户明确要求详细分析，不要展开长背景、过程推导或重复大段快照数据。使用中文。`,
           },
           ...recentMessages,
           {
@@ -950,6 +962,8 @@ export function App() {
       stopStreamingReveal();
       updateAssistantReply(finalReply);
     } catch (error) {
+      if (looksLikeProjectDataCommandRequest(trimmed) && ruleProjectPlan && executeProjectDataCommandPlan(ruleProjectPlan)) return;
+      if (looksLikeTaskCommandRequest(trimmed) && ruleTaskPlan && executeTaskCommandPlan(ruleTaskPlan)) return;
       const message = error instanceof Error ? error.message : "远程模型返回异常";
       updateAssistantReply(`远程 AI 调用失败：${message}`);
     }
@@ -970,7 +984,7 @@ export function App() {
     notify(`模型设置已保存到 ${repository.storageLabel}。`);
   };
 
-  const saveTaskStages = (projectId: string, taskStages: TaskStageDefinition[]) => {
+  const saveTaskStages = (projectId: string, taskStages: TaskStageDefinition[], milestones: ProjectMilestone[] = []) => {
     const draftStages = taskStages.filter((stage) => String(stage.label || "").trim());
     const coefficientTotal = stageCoefficientTotal(draftStages);
     if (coefficientTotal !== draftStages.length) {
@@ -985,9 +999,9 @@ export function App() {
       const previousIdByLabel = new Map(previousStages.map((stage) => [stage.label, stage.id]));
       const projectStageConfigs = current.projectStageConfigs.some((config) => config.projectId === projectId)
         ? current.projectStageConfigs.map((config) =>
-            config.projectId === projectId ? { ...config, stages: normalizedStages, updatedAt: new Date().toISOString() } : config,
+            config.projectId === projectId ? { ...config, stages: normalizedStages, milestones, updatedAt: new Date().toISOString() } : config,
           )
-        : [...current.projectStageConfigs, createProjectStageConfig(projectId, normalizedStages, new Date().toISOString())];
+        : [...current.projectStageConfigs, createProjectStageConfig(projectId, normalizedStages, new Date().toISOString(), milestones)];
       return {
         ...current,
         projectStageConfigs,

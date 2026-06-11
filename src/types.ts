@@ -24,6 +24,7 @@ export type PageKey =
 export type TaskStatus = "todo" | "doing" | "customer" | "blocked" | "done";
 export type TaskStage = string;
 export type RiskKind = "risk" | "issue";
+export type RiskVisibility = "internal" | "external";
 export type AssistantScope = "project" | "all";
 export type ScopeCategory = "本期SOW范围" | "变更增加范围" | "不在本期范围";
 export type PersonDayType = "实施" | "开发";
@@ -31,6 +32,7 @@ export type ProjectImplementationMode = "本地实施" | "出差实施";
 export type WeeklyProjectStatus = "健康" | "延期" | "暂停" | "需关注" | "风险";
 export type WeeklyMailDraftStatus = "not-created" | "local-draft" | "mailbox-draft" | "failed";
 export type WeeklyMarkdownArchiveStatus = "not-archived" | "archived" | "failed";
+export type WeeklyReportAudience = "internal" | "customer";
 
 export interface TaskStageDefinition {
   id: string;
@@ -38,9 +40,18 @@ export interface TaskStageDefinition {
   coefficient?: number;
 }
 
+export interface ProjectMilestone {
+  id: string;
+  title: string;
+  dueDate: string;
+  status: string;
+  description: string;
+}
+
 export interface ProjectStageConfig {
   projectId: string;
   stages: TaskStageDefinition[];
+  milestones: ProjectMilestone[];
   updatedAt: string;
 }
 
@@ -121,7 +132,10 @@ export interface RiskIssue {
   title: string;
   severity: "高" | "中" | "低";
   status: "open" | "tracking" | "closed";
+  riskVisibility: RiskVisibility;
   responsePlan: string;
+  internalHandling: string;
+  customerAssistance: string;
   linkedTaskId: string;
 }
 
@@ -150,11 +164,13 @@ export interface AiMessage {
 export interface WeeklyReport {
   id: string;
   projectId: string;
+  audience: WeeklyReportAudience;
   reportDate: string;
   title: string;
   content: string;
   generatedBy: "manual" | "ai";
   projectOwner: string;
+  implementationPersonnel: string;
   implementationMode: ProjectImplementationMode;
   projectStatus: WeeklyProjectStatus;
   thisWeekTaskIds: string[];
@@ -181,10 +197,13 @@ export type WeeklyReportInput = Pick<WeeklyReport, "projectId" | "content"> &
 export interface WeeklyReportPreference {
   projectId: string;
   projectOwner: string;
+  implementationPersonnel: string;
   implementationMode: ProjectImplementationMode;
   projectStatus: WeeklyProjectStatus;
   recipientsTo: string;
   recipientsCc: string;
+  customerRecipientsTo: string;
+  customerRecipientsCc: string;
   mailSubjectTemplate: string;
   updatedAt: string;
 }
@@ -332,6 +351,6 @@ export interface ProjectSnapshot {
     pendingDeliverables: number;
   };
   tasks: Array<Pick<Task, "code" | "title" | "status" | "priority" | "startDate" | "dueDate" | "dimension" | "parentId">>;
-  risks: Array<Pick<RiskIssue, "kind" | "title" | "severity" | "status" | "responsePlan">>;
+  risks: Array<Pick<RiskIssue, "kind" | "title" | "severity" | "status" | "riskVisibility" | "responsePlan" | "internalHandling" | "customerAssistance">>;
   deliverables: Array<Pick<Deliverable, "code" | "name" | "status" | "acceptance" | "dueDate">>;
 }

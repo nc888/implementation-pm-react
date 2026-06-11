@@ -90,10 +90,13 @@ const risk = (
   status: RiskIssue["status"],
   responsePlan: string,
   linkedTaskId: string,
-): RiskIssue => ({ id, projectId, kind, title, severity, status, responsePlan, linkedTaskId });
+  riskVisibility: RiskIssue["riskVisibility"] = "internal",
+  internalHandling = responsePlan,
+  customerAssistance = "",
+): RiskIssue => ({ id, projectId, kind, title, severity, status, riskVisibility, responsePlan, internalHandling, customerAssistance, linkedTaskId });
 
 export const defaultData: AppState = {
-  schemaVersion: 15,
+  schemaVersion: 18,
   ui: {
     currentPage: "portal",
     currentProjectId: "p-crm",
@@ -197,10 +200,10 @@ export const defaultData: AppState = {
     deliverable("d-5", "p-crm", "上线切换方案.pdf", "GO-003", "待补充", "未提交", "2026-06-14"),
   ],
   risksIssues: [
-    risk("r-17", "p-crm", "risk", "客户主数据质量不足影响迁移演练", "高", "open", "分批清洗、先导入核心字段、每日校验", "t-118"),
-    risk("r-21", "p-crm", "risk", "客户关键用户无法按时参加培训", "中", "tracking", "提前锁定候补用户并调整培训窗口", "t-151"),
-    risk("i-31", "p-crm", "issue", "UAT环境账号无法登录", "高", "open", "运维排查SSO配置并补发账号", "t-031"),
-    risk("i-36", "p-crm", "issue", "蓝图确认纪要签字页缺失", "中", "tracking", "跟进客户项目负责人回签", "t-044"),
+    risk("r-17", "p-crm", "risk", "客户主数据质量不足影响迁移演练", "高", "open", "分批清洗、先导入核心字段、每日校验", "t-118", "external", "项目组整理数据校验规则并每日回传差异清单", "请客户业务负责人补齐主数据缺失字段并确认清洗口径"),
+    risk("r-21", "p-crm", "risk", "客户关键用户无法按时参加培训", "中", "tracking", "提前锁定候补用户并调整培训窗口", "t-151", "external", "项目组准备录屏和补训安排", "请客户确认关键用户或候补用户名单"),
+    risk("i-31", "p-crm", "issue", "UAT环境账号无法登录", "高", "open", "运维排查SSO配置并补发账号", "t-031", "internal", "运维排查SSO配置并补发账号"),
+    risk("i-36", "p-crm", "issue", "蓝图确认纪要签字页缺失", "中", "tracking", "跟进客户项目负责人回签", "t-044", "internal", "项目经理跟进回签材料并完成归档"),
   ],
   aiModelConfigs: [
     {

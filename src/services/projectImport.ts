@@ -13,6 +13,7 @@ import type {
   WeeklyReport,
   WeeklyReportPreference,
 } from "../types";
+import { createProjectStageConfig, projectMilestonesForState, stageDefinitionsForProject } from "./contextBuilder";
 import { migrateAppState } from "./repository";
 
 type ImportableProjectRecord =
@@ -60,6 +61,17 @@ const asArray = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[
 const isString = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const isPresent = <T>(value: T | null | undefined): value is T => value !== null && value !== undefined;
 
+function buildProjectStageConfigBackup(state: AppState, project: Project): ProjectStageConfig {
+  const existing = state.projectStageConfigs.find((config) => config.projectId === project.id);
+  const milestones = projectMilestonesForState(state, project.id);
+  return existing
+    ? {
+        ...existing,
+        milestones,
+      }
+    : createProjectStageConfig(project.id, stageDefinitionsForProject(state, project.id), new Date().toISOString(), milestones);
+}
+
 export function buildSingleProjectBackup(state: AppState, projectId: string) {
   const project = state.projects.find((item) => item.id === projectId);
   if (!project) throw new Error("未找到要导出的项目。");
@@ -81,7 +93,7 @@ export function buildSingleProjectBackup(state: AppState, projectId: string) {
     risksIssues: state.risksIssues.filter((item) => item.projectId === project.id),
     weeklyReports: state.weeklyReports.filter((item) => item.projectId === project.id),
     weeklyReportPreferences: state.weeklyReportPreferences.filter((item) => item.projectId === project.id),
-    projectStageConfigs: state.projectStageConfigs.filter((item) => item.projectId === project.id),
+    projectStageConfigs: [buildProjectStageConfigBackup(state, project)],
     deliveryWorkflows: state.deliveryWorkflows.filter((item) => item.projectId === project.id),
     aiScores: state.aiScores.filter((item) => item.projectId === project.id),
     aiMessages: state.aiMessages.filter((item) => item.scope === "project" && item.projectId === project.id),
@@ -305,6 +317,9 @@ export function importProjectsFromBackup(current: AppState, payload: unknown): P
         ...item,
         id: crypto.randomUUID(),
         projectId,
+        riskVisibility: item.riskVisibility === "external" ? "external" : "internal",
+        internalHandling: item.internalHandling || item.responsePlan || "",
+        customerAssistance: item.customerAssistance || "",
         linkedTaskId: item.linkedTaskId ? taskIdMap.get(item.linkedTaskId) || "" : "",
       };
     })

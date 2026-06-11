@@ -1,7 +1,26 @@
 import { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, CheckCircle2, Database, Eye, EyeOff, Inbox, KeyRound, LockKeyhole, Mail, Plus, RadioTower, RotateCcw, ShieldCheck, SlidersHorizontal, Trash2, Wifi } from "lucide-react";
-import type { AiModelConfig, AppState, EmailConfig, PageKey, TaskStageDefinition } from "../types";
-import { defaultTaskStages, stageCoefficientTotal, stageDefinitionsForProject } from "../services/contextBuilder";
+import {
+  ArrowDown,
+  ArrowUp,
+  CalendarDays,
+  CheckCircle2,
+  Database,
+  Eye,
+  EyeOff,
+  Inbox,
+  KeyRound,
+  LockKeyhole,
+  Mail,
+  Plus,
+  RadioTower,
+  RotateCcw,
+  ShieldCheck,
+  SlidersHorizontal,
+  Trash2,
+  Wifi,
+} from "lucide-react";
+import type { AiModelConfig, AppState, EmailConfig, PageKey, ProjectMilestone, TaskStageDefinition } from "../types";
+import { defaultTaskStages, projectMilestonesForState, stageCoefficientTotal, stageDefinitionsForProject } from "../services/contextBuilder";
 import { Badge, Button } from "../components/ui";
 
 function endpointLabel(baseUrl: string) {
@@ -47,7 +66,7 @@ export function SettingsPage({
   state: AppState;
   onSaveConfig: (config: AiModelConfig) => void;
   onTestConfig: (config: AiModelConfig) => Promise<void> | void;
-  onSaveStages: (projectId: string, stages: TaskStageDefinition[]) => void;
+  onSaveStages: (projectId: string, stages: TaskStageDefinition[], milestones: ProjectMilestone[]) => void;
   onSaveEmailConfig: (config: EmailConfig) => void;
 }) {
   const defaultConfig = state.aiModelConfigs.find((item) => item.isDefault) || state.aiModelConfigs[0];
@@ -56,6 +75,7 @@ export function SettingsPage({
   const [selectedStageProjectId, setSelectedStageProjectId] = useState(state.ui.currentProjectId || state.projects[0]?.id || "");
   const [draft, setDraft] = useState<AiModelConfig>(selectedConfig);
   const [stageDrafts, setStageDrafts] = useState<TaskStageDefinition[]>(stageDefinitionsForProject(state, selectedStageProjectId).map((stage) => ({ ...stage })));
+  const [milestoneDrafts, setMilestoneDrafts] = useState<ProjectMilestone[]>(projectMilestonesForState(state, selectedStageProjectId).map((milestone) => ({ ...milestone })));
   const [emailDraft, setEmailDraft] = useState<EmailConfig>(state.emailConfig);
   const [testing, setTesting] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -79,7 +99,8 @@ export function SettingsPage({
 
   useEffect(() => {
     setStageDrafts(stageDefinitionsForProject(state, selectedStageProjectId).map((stage) => ({ ...stage })));
-  }, [selectedStageProjectId, state.projectStageConfigs, state.taskStages]);
+    setMilestoneDrafts(projectMilestonesForState(state, selectedStageProjectId).map((milestone) => ({ ...milestone })));
+  }, [selectedStageProjectId, state.projectStageConfigs, state.taskStages, state.deliverables, state.projects]);
 
   useEffect(() => {
     setEmailDraft(state.emailConfig);
@@ -145,6 +166,27 @@ export function SettingsPage({
 
   const removeStage = (stageId: string) => {
     setStageDrafts((current) => (current.length <= 1 ? current : current.filter((stage) => stage.id !== stageId)));
+  };
+
+  const patchMilestone = (milestoneId: string, patch: Partial<ProjectMilestone>) => {
+    setMilestoneDrafts((current) => current.map((milestone) => (milestone.id === milestoneId ? { ...milestone, ...patch } : milestone)));
+  };
+
+  const addMilestone = () => {
+    setMilestoneDrafts((current) => [
+      ...current,
+      {
+        id: `milestone-${Date.now().toString(36)}`,
+        title: `M${current.length + 1} 里程碑`,
+        dueDate: "",
+        status: "未开始",
+        description: "",
+      },
+    ]);
+  };
+
+  const removeMilestone = (milestoneId: string) => {
+    setMilestoneDrafts((current) => current.filter((milestone) => milestone.id !== milestoneId));
   };
 
   const resetTencentEmailConfig = () => {
@@ -363,7 +405,7 @@ export function SettingsPage({
             <Database aria-hidden="true" />
             <div>
               <strong>项目阶段方案</strong>
-              <span>每个项目独立保存阶段与系数，自动项目进度会按该项目的阶段系数加权计算。</span>
+            <span>每个项目独立保存阶段、系数与里程碑，项目进度会按该项目的阶段系数加权计算。</span>
             </div>
           </div>
           <div className="model-form-grid stage-project-form">
@@ -437,10 +479,48 @@ export function SettingsPage({
                 <RotateCcw aria-hidden="true" />
                 恢复专家推荐
               </Button>
-              <Button tone="primary" onClick={() => onSaveStages(selectedStageProjectId, stageDrafts)} disabled={!selectedStageProject || !coefficientValid}>
+              <Button tone="primary" onClick={() => onSaveStages(selectedStageProjectId, stageDrafts, milestoneDrafts)} disabled={!selectedStageProject || !coefficientValid}>
                 保存阶段配置
               </Button>
             </div>
+          </div>
+        </div>
+        <div className="settings-panel stage-config-card milestone-config-card">
+          <div className="model-panel-heading">
+            <CalendarDays aria-hidden="true" />
+            <div>
+              <strong>里程碑配置</strong>
+              <span>导入项目、项目编辑和 AI 上下文都会读取这里的里程碑列表。</span>
+            </div>
+          </div>
+          <div className="stage-config-list">
+            {milestoneDrafts.map((milestone, index) => (
+              <div key={milestone.id} className="stage-config-row milestone-config-row">
+                <span className="stage-config-index">{index + 1}</span>
+                <input value={milestone.title} onChange={(event) => patchMilestone(milestone.id, { title: event.target.value })} aria-label={`里程碑 ${index + 1} 名称`} />
+                <label className="stage-coefficient-input">
+                  <span>日期</span>
+                  <input type="date" value={milestone.dueDate} onChange={(event) => patchMilestone(milestone.id, { dueDate: event.target.value })} aria-label={`里程碑 ${index + 1} 日期`} />
+                </label>
+                <label className="stage-coefficient-input">
+                  <span>状态</span>
+                  <input value={milestone.status} onChange={(event) => patchMilestone(milestone.id, { status: event.target.value })} aria-label={`里程碑 ${index + 1} 状态`} />
+                </label>
+                <button type="button" className="button danger settings-icon-button" onClick={() => removeMilestone(milestone.id)} aria-label="删除里程碑" title="删除里程碑">
+                  <Trash2 aria-hidden="true" />
+                </button>
+              </div>
+            ))}
+            {!milestoneDrafts.length ? <div className="empty compact">暂无里程碑。</div> : null}
+          </div>
+          <div className="actions-row model-config-actions">
+            <Button tone="ghost" onClick={addMilestone}>
+              <Plus aria-hidden="true" />
+              新增里程碑
+            </Button>
+            <Button tone="primary" onClick={() => onSaveStages(selectedStageProjectId, stageDrafts, milestoneDrafts)} disabled={!selectedStageProject || !coefficientValid}>
+              保存阶段与里程碑
+            </Button>
           </div>
         </div>
       </section>

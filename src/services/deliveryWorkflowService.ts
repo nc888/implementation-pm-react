@@ -9,7 +9,7 @@ import type {
   TaskStatus,
   WorkflowHandoffContent,
 } from "../types";
-import { normalizeTaskStage, stageDefinitionsForProject } from "./contextBuilder";
+import { createProjectStageConfig, formatProjectMilestoneOption, normalizeProjectMilestones, normalizeTaskStage, stageDefinitionsForProject } from "./contextBuilder";
 import { callConfiguredModel, callConfiguredModelStreaming, type ModelStreamDeltaHandler } from "./modelGateway";
 
 export type DeliveryDraftKind = "personDay" | "hardware" | "wbs" | "implementation";
@@ -456,7 +456,29 @@ export function confirmProjectFlow(state: AppState, projectId: string): AppState
       dueDate: item.dueDate,
       attachmentRequirement: "required" as const,
     }));
-  const nextMilestone = planItems.find((item) => item.milestone)?.title || "";
+  const generatedMilestones = normalizeProjectMilestones(
+    planItems
+      .filter((item) => item.milestone)
+      .map((item) => ({
+        id: `plan-${projectId}-${item.code}`,
+        title: item.title,
+        dueDate: item.dueDate,
+        status: "",
+        description: item.deliverable || item.stage || "",
+      })),
+  );
+  const nextMilestone = generatedMilestones[0] ? formatProjectMilestoneOption(generatedMilestones[0]) : "";
+  const projectStageConfigs = state.projectStageConfigs.some((config) => config.projectId === projectId)
+    ? state.projectStageConfigs.map((config) =>
+        config.projectId === projectId
+          ? {
+              ...config,
+              milestones: normalizeProjectMilestones([...(config.milestones || []), ...generatedMilestones]),
+              updatedAt: timestamp,
+            }
+          : config,
+      )
+    : [...state.projectStageConfigs, createProjectStageConfig(projectId, stageDefinitionsForProject(state, projectId), timestamp, generatedMilestones)];
 
   const nextWorkflow: DeliveryWorkflow = {
     ...workflow,
@@ -474,6 +496,7 @@ export function confirmProjectFlow(state: AppState, projectId: string): AppState
       ...state,
       tasks: [...keepTasks, ...generatedTasksWithParents],
       deliverables: [...keepDeliverables, ...generatedDeliverables],
+      projectStageConfigs,
       projects: state.projects.map((item) =>
         item.id === projectId
           ? {

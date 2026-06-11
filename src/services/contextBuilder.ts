@@ -1,4 +1,17 @@
-import type { AppState, Project, ProjectMetrics, ProjectSnapshot, ProjectStageConfig, ScopeItem, Task, TaskStage, TaskStageDefinition, TaskStatus } from "../types";
+import type {
+  AppState,
+  Deliverable,
+  Project,
+  ProjectMetrics,
+  ProjectMilestone,
+  ProjectSnapshot,
+  ProjectStageConfig,
+  ScopeItem,
+  Task,
+  TaskStage,
+  TaskStageDefinition,
+  TaskStatus,
+} from "../types";
 
 export const taskStatusLabels = {
   todo: "待处理",
@@ -111,10 +124,87 @@ export function normalizeStageDefinitions(stages?: TaskStageDefinition[] | null)
 
 type StageConfigState = Pick<AppState, "taskStages"> & Partial<Pick<AppState, "projectStageConfigs" | "ui">>;
 
-export function createProjectStageConfig(projectId: string, stages?: TaskStageDefinition[] | null, updatedAt = ""): ProjectStageConfig {
+function normalizeMilestoneDate(value?: string) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$|^(\d{1,2})[-/](\d{1,2})$/);
+  if (!match) return "";
+  const year = match[1] || String(new Date().getFullYear());
+  const month = match[2] || match[4];
+  const day = match[3] || match[5];
+  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
+function milestoneId(title: string, dueDate: string, index: number) {
+  const base = `${title}-${dueDate || index + 1}`
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/gi, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 64);
+  return base || `milestone-${index + 1}`;
+}
+
+function parseMilestoneText(value?: string): Partial<ProjectMilestone> | null {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const dateText = text.match(/[（(]\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2})\s*[）)]/)?.[1] || "";
+  const dueDate = normalizeMilestoneDate(dateText);
+  const title = text.replace(/[（(]\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2})\s*[）)]/g, "").trim();
+  return title ? { title, dueDate, status: "未开始", description: "" } : null;
+}
+
+export function normalizeProjectMilestones(milestones?: Array<Partial<ProjectMilestone> | string | null | undefined> | null): ProjectMilestone[] {
+  const source = Array.isArray(milestones) ? milestones : [];
+  const seen = new Set<string>();
+  return source
+    .map((item, index): ProjectMilestone | null => {
+      const partial = typeof item === "string" ? parseMilestoneText(item) : item;
+      const title = String(partial?.title || "").trim();
+      if (!title) return null;
+      const dueDate = normalizeMilestoneDate(partial?.dueDate || "");
+      const key = `${title}|${dueDate}`;
+      if (seen.has(key)) return null;
+      seen.add(key);
+      return {
+        id: String(partial?.id || milestoneId(title, dueDate, index)).trim() || milestoneId(title, dueDate, index),
+        title,
+        dueDate,
+        status: String(partial?.status || "").trim() || "未开始",
+        description: String(partial?.description || "").trim(),
+      };
+    })
+    .filter((milestone): milestone is ProjectMilestone => Boolean(milestone))
+    .sort((left, right) => (left.dueDate || "9999-12-31").localeCompare(right.dueDate || "9999-12-31") || left.title.localeCompare(right.title));
+}
+
+export function milestonesFromDeliverables(deliverables: Deliverable[], projectId: string): ProjectMilestone[] {
+  return normalizeProjectMilestones(
+    deliverables
+      .filter((deliverable) => deliverable.projectId === projectId && /^M\d+(?:[-_ ]?ACCEPT)?$/i.test(deliverable.code || ""))
+      .map((deliverable) => ({
+        id: `deliverable-${deliverable.id}`,
+        title: `${deliverable.code.replace(/[-_ ]?ACCEPT$/i, "")} ${deliverable.name.replace(/验收标准$/, "")}`.trim(),
+        dueDate: deliverable.dueDate,
+        status: deliverable.acceptance || deliverable.status || "未开始",
+        description: deliverable.status || "",
+      })),
+  );
+}
+
+export function formatProjectMilestoneOption(milestone: Pick<ProjectMilestone, "title" | "dueDate">) {
+  const date = milestone.dueDate ? milestone.dueDate.slice(5).replace("-", "-") : "";
+  return `${milestone.title}${date ? ` (${date})` : ""}`;
+}
+
+export function createProjectStageConfig(
+  projectId: string,
+  stages?: TaskStageDefinition[] | null,
+  updatedAt = "",
+  milestones?: Array<Partial<ProjectMilestone> | string | null | undefined> | null,
+): ProjectStageConfig {
   return {
     projectId,
     stages: normalizeStageDefinitions(stages),
+    milestones: normalizeProjectMilestones(milestones),
     updatedAt,
   };
 }
@@ -180,6 +270,19 @@ export function projectRisks(state: AppState, projectId = getProject(state).id) 
 
 export function projectDeliverables(state: AppState, projectId = getProject(state).id) {
   return state.deliverables.filter((item) => item.projectId === projectId);
+}
+
+export function projectMilestonesForState(state?: AppState | null, projectId?: string) {
+  if (!state) return [];
+  const targetProjectId = projectId || state.ui.currentProjectId || "";
+  if (!targetProjectId) return [];
+  const project = state.projects.find((item) => item.id === targetProjectId);
+  const config = state.projectStageConfigs.find((item) => item.projectId === targetProjectId);
+  return normalizeProjectMilestones([
+    ...(config?.milestones || []),
+    ...milestonesFromDeliverables(projectDeliverables(state, targetProjectId), targetProjectId),
+    ...(project?.nextMilestone ? [project.nextMilestone] : []),
+  ]);
 }
 
 export function projectScope(state: AppState, projectId = getProject(state).id) {
@@ -444,12 +547,15 @@ export function buildProjectSnapshot(state: AppState, project = getProject(state
       dimension,
       parentId,
     })),
-    risks: risks.map(({ kind, title, severity, status, responsePlan }) => ({
+    risks: risks.map(({ kind, title, severity, status, riskVisibility, responsePlan, internalHandling, customerAssistance }) => ({
       kind,
       title,
       severity,
       status,
+      riskVisibility,
       responsePlan,
+      internalHandling,
+      customerAssistance,
     })),
     deliverables: deliverables.map(({ code, name, status, acceptance, dueDate }) => ({
       code,
