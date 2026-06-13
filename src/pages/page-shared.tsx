@@ -75,8 +75,6 @@ export const riskIssueMatchesSearch = (state: AppState, item: RiskIssue) => {
     item.severity,
     item.status,
     item.responsePlan,
-    item.internalHandling,
-    item.customerAssistance,
   ]);
 };
 

@@ -187,8 +187,6 @@ function riskRow(item: ReturnType<typeof projectRisks>[number]) {
     item.severity,
     riskStatusText(item.status),
     strike(item.responsePlan || "未维护"),
-    strike(item.internalHandling || "未维护"),
-    strike(item.customerAssistance || "-"),
   ];
 }
 
@@ -493,6 +491,12 @@ function isClosedDeliverable(item: ReturnType<typeof projectDeliverables>[number
   return ["已归档", "已提交"].includes(item.status) || ["已验收", "内部确认"].includes(item.acceptance);
 }
 
+export function isCustomerConfirmationDeliverable(item: ReturnType<typeof projectDeliverables>[number]) {
+  const customerState = /客户/.test(`${item.status} ${item.acceptance}`);
+  const completed = ["已归档"].includes(item.status) || ["已验收", "内部确认"].includes(item.acceptance);
+  return customerState && !completed;
+}
+
 function deliverableDate(item: ReturnType<typeof projectDeliverables>[number]) {
   return (item.attachmentUploadedAt || item.dueDate || "").slice(0, 10);
 }
@@ -534,8 +538,7 @@ function customerAttentionRows(state: AppState, project: Project, nextWeek: Date
       "影响相关工作继续推进",
     ]);
   const pendingDeliverables = projectDeliverables(state, project.id)
-    .filter((item) => !isClosedDeliverable(item))
-    .filter((item) => !item.dueDate || item.dueDate <= nextWeek.end)
+    .filter(isCustomerConfirmationDeliverable)
     .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"))
     .slice(0, 4);
   const riskRows = projectRisks(state, project.id)
@@ -543,7 +546,7 @@ function customerAttentionRows(state: AppState, project: Project, nextWeek: Date
     .slice(0, 3)
     .map((item) => [
       item.title,
-      item.customerAssistance || "请客户侧协助确认相关条件",
+      item.responsePlan || "请客户侧协助确认相关条件",
       item.severity === "高" ? "可能影响关键节点，需优先处理" : "需持续关注，避免影响后续推进",
     ]);
   const deliverableRows = pendingDeliverables.map((item) => [
@@ -551,7 +554,7 @@ function customerAttentionRows(state: AppState, project: Project, nextWeek: Date
     `请协助确认${item.dueDate ? `（计划 ${formatDateShort(item.dueDate)} 前）` : ""}`,
     item.linkedTaskId && taskMap.get(item.linkedTaskId) ? "用于支撑关联工作闭环" : "用于支撑后续确认与验收闭环",
   ]);
-  return [...customerBlockedTasks, ...riskRows, ...deliverableRows].slice(0, 8);
+  return [...riskRows, ...customerBlockedTasks, ...deliverableRows].slice(0, 8);
 }
 
 function customerPlanRows(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
@@ -666,9 +669,9 @@ ${markdownTable(
 
 ## 五、风险 / 问题项跟踪
 ${markdownTable(
-    ["类型", "可见性", "标题", "等级", "状态", "应对 / 下一步", "内部处理", "需客户协助"],
+    ["类型", "可见性", "标题", "等级", "状态", "应对 / 下一步"],
     allRisks.map(riskRow),
-    ["暂无", "-", "暂无风险 / 问题记录", "-", "-", "-", "-", "-"],
+    ["暂无", "-", "暂无风险 / 问题记录", "-", "-", "-"],
   )}
 
 ${weeklyThisWeekTaskSection(state, selectedThisWeek)}

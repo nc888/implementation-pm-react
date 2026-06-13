@@ -351,6 +351,6 @@ export interface ProjectSnapshot {
     pendingDeliverables: number;
   };
   tasks: Array<Pick<Task, "code" | "title" | "status" | "priority" | "startDate" | "dueDate" | "dimension" | "parentId">>;
-  risks: Array<Pick<RiskIssue, "kind" | "title" | "severity" | "status" | "riskVisibility" | "responsePlan" | "internalHandling" | "customerAssistance">>;
+  risks: Array<Pick<RiskIssue, "kind" | "title" | "severity" | "status" | "riskVisibility" | "responsePlan">>;
   deliverables: Array<Pick<Deliverable, "code" | "name" | "status" | "acceptance" | "dueDate">>;
 }

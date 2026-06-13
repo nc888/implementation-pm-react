@@ -1,9 +1,21 @@
-import { useEffect, useState } from "react";
-import { Bot, Database, Download, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Bot, Database, Download, Palette, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings } from "lucide-react";
 import type { AppState, PageKey } from "../types";
 import type { ProjectBackupScope } from "../services/projectImport";
 import { getProject } from "../services/contextBuilder";
 import { LevelTwoNavigation, getPrimarySection, primarySections, type PrimarySection } from "./navigation";
+
+type VisualTheme = "default" | "deep-blue" | "soft-green";
+
+const visualThemeStorageKey = "implementation-pm-visual-theme";
+
+const visualThemeLabels: Record<VisualTheme, string> = {
+  default: "默认主题",
+  "deep-blue": "深蓝背景",
+  "soft-green": "绿色背景",
+};
+
+const visualThemeCycle: VisualTheme[] = ["default", "deep-blue", "soft-green"];
 
 const titles: Record<PageKey, [string, string]> = {
   portal: ["项目入口", "先选项目，再进入单项目的看板、计划、风险、交付物和周报。"],
@@ -65,6 +77,15 @@ export function AppShell({
 }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarManualOpen, setSidebarManualOpen] = useState(false);
+  const themeSwitchTimerRef = useRef<number | null>(null);
+  const [visualTheme, setVisualTheme] = useState<VisualTheme>(() => {
+    try {
+      const savedTheme = window.localStorage.getItem(visualThemeStorageKey);
+      return savedTheme === "soft-green" || savedTheme === "deep-blue" || savedTheme === "default" ? savedTheme : "default";
+    } catch {
+      return "default";
+    }
+  });
   const project = getProject(state);
   const [title, subtitle] = titles[state.ui.currentPage];
   const activeSection = getPrimarySection(state.ui.currentPage);
@@ -86,11 +107,38 @@ export function AppShell({
         ? activeSection.label
         : `${activeSection.label} / ${project.name}`;
   const logoSrc = `${import.meta.env.BASE_URL}logo.svg`;
+  const nextVisualTheme = visualThemeCycle[(visualThemeCycle.indexOf(visualTheme) + 1) % visualThemeCycle.length];
 
   useEffect(() => {
     setSidebarCollapsed(false);
     setSidebarManualOpen(false);
   }, [activeSection.key, state.ui.currentPage]);
+
+  useEffect(() => {
+    return () => {
+      if (themeSwitchTimerRef.current !== null) {
+        window.clearTimeout(themeSwitchTimerRef.current);
+      }
+      document.documentElement.classList.remove("theme-switching");
+    };
+  }, []);
+
+  useEffect(() => {
+    if (visualTheme === "default") {
+      delete document.documentElement.dataset.visualTheme;
+    } else {
+      document.documentElement.dataset.visualTheme = visualTheme;
+    }
+
+    const persistTimer = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(visualThemeStorageKey, visualTheme);
+      } catch {
+        // localStorage can be unavailable in embedded webviews; the visual switch still works for the session.
+      }
+    }, 220);
+    return () => window.clearTimeout(persistTimer);
+  }, [visualTheme]);
 
   useEffect(() => {
     if (isSettingsPage) return;
@@ -102,6 +150,18 @@ export function AppShell({
   useEffect(() => {
     if (!showProjectExecutionActions && state.ui.search) onSearch("");
   }, [showProjectExecutionActions, state.ui.search, onSearch]);
+
+  const switchVisualTheme = () => {
+    if (themeSwitchTimerRef.current !== null) {
+      window.clearTimeout(themeSwitchTimerRef.current);
+    }
+    document.documentElement.classList.add("theme-switching");
+    themeSwitchTimerRef.current = window.setTimeout(() => {
+      document.documentElement.classList.remove("theme-switching");
+      themeSwitchTimerRef.current = null;
+    }, 180);
+    setVisualTheme(nextVisualTheme);
+  };
 
   return (
     <div className={`app-shell ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""} ${hideSidebar ? "no-sidebar" : ""}`}>
@@ -130,6 +190,15 @@ export function AppShell({
           })}
         </nav>
         <div className="primary-actions">
+          <button
+            className={`theme-toggle-button ${visualTheme}`}
+            onClick={switchVisualTheme}
+            title={`切换到${visualThemeLabels[nextVisualTheme]}`}
+            aria-label={`切换到${visualThemeLabels[nextVisualTheme]}`}
+          >
+            <Palette aria-hidden="true" />
+            <span className="theme-toggle-swatch" aria-hidden="true" />
+          </button>
           <span className="storage-indicator" title={`Data storage: ${storageLabel}`}>
             <Database aria-hidden="true" />
             <span>{storageLabel}</span>

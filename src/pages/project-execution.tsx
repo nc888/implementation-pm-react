@@ -85,6 +85,7 @@ import {
   ensureWeeklyReportContentSchema,
   formatDateRange,
   getLeafSubtasks,
+  isCustomerConfirmationDeliverable,
   isCustomerVisibleRisk,
   nextWeekRangeFor,
   normalizeWeeklyCustomerMailSubject,
@@ -1104,8 +1105,6 @@ function RisksPageLegacy({
       <Badge tone={item.riskVisibility === "external" ? "warning" : "primary"}>{riskVisibilityLabel(item.riskVisibility)}</Badge>
       <strong>{item.title}</strong>
       <p className="muted">{item.responsePlan}</p>
-      {item.internalHandling ? <p className="muted">内部处理：{item.internalHandling}</p> : null}
-      {item.customerAssistance ? <p className="muted">需客户协助：{item.customerAssistance}</p> : null}
       <Badge>{item.status}</Badge>
       <div className="actions-row">
         <Button tone="ghost" onClick={() => onEditRiskIssue(item)}>
@@ -1350,8 +1349,6 @@ export function ProjectOverviewPage({
                     <span className="micro-tag">{riskVisibilityLabel(item.riskVisibility)}</span>
                   </div>
                   <p>{riskStatusLabel(item.status)} · {item.responsePlan}</p>
-                  {item.internalHandling ? <p>内部处理：{item.internalHandling}</p> : null}
-                  {item.customerAssistance ? <p>需客户协助：{item.customerAssistance}</p> : null}
                 </div>
               ))}
               {!followUpTasks.length && !followUpRisks.length ? <div className="empty compact">当前没有需要紧急跟进的事项。</div> : null}
@@ -2144,8 +2141,6 @@ export function RisksPage({
         riskStatusLabel(item.status),
         riskVisibilityLabel(item.riskVisibility),
         item.responsePlan,
-        item.internalHandling,
-        item.customerAssistance,
         linkedTask ? `${linkedTask.code} - ${linkedTask.title}` : item.linkedTaskId || "",
       ];
     });
@@ -2154,7 +2149,7 @@ export function RisksPage({
         projectId: project.id,
         storageLabel: currentStorageLabel,
         fileName: "风险问题信息列表.csv",
-        content: csvContent(["类型", "标题", "等级", "状态", "可见性", "应对措施", "内部处理", "需客户协助", "关联任务"], rows),
+        content: csvContent(["类型", "标题", "等级", "状态", "可见性", "应对措施", "关联任务"], rows),
       });
       setStorageMessage({ tone: "success", text: `CSV 已保存：${saved.filePath}` });
     } catch (error) {
@@ -2196,8 +2191,6 @@ export function RisksPage({
               <Badge tone={item.riskVisibility === "external" ? "warning" : "primary"}>{riskVisibilityLabel(item.riskVisibility)}</Badge>
             </div>
             <p>{item.responsePlan}</p>
-            {item.internalHandling ? <p>内部处理：{item.internalHandling}</p> : null}
-            {item.customerAssistance ? <p>需客户协助：{item.customerAssistance}</p> : null}
             <div className="compact-item-actions">
               <Button tone="ghost" onClick={() => onEditRiskIssue(item)}>编辑</Button>
               <Button tone="danger" onClick={() => onDeleteRiskIssue(item.id)}>删除</Button>
@@ -2529,25 +2522,17 @@ function extractCustomerWeeklyVisualStats(content: string) {
   const attentionCount = countRowsInSection(content, "需客户关注");
   const riskIssueCount = countRowsInSection(content, "风险");
   const planCount = countRowsInSection(content, "下周计划");
-  const totalCount = Math.max(1, workCount + attentionCount + riskIssueCount + planCount);
   return {
     workCount,
     attentionCount,
     riskIssueCount,
     planCount,
-    totalCount,
     attentionLevel: attentionCount || riskIssueCount ? "需关注" : "平稳",
   };
 }
 
 function WeeklyCustomerVisualSummary({ content }: { content: string }) {
   const stats = extractCustomerWeeklyVisualStats(content);
-  const bars = [
-    ["本周工作", stats.workCount, stats.totalCount],
-    ["需配合", stats.attentionCount, stats.totalCount],
-    ["风险问题", stats.riskIssueCount, stats.totalCount],
-    ["下周计划", stats.planCount, stats.totalCount],
-  ] as const;
 
   return (
     <div className="weekly-customer-visual-summary">
@@ -2568,18 +2553,6 @@ function WeeklyCustomerVisualSummary({ content }: { content: string }) {
         <div>
           <span>下周计划</span>
           <strong>{stats.planCount}</strong>
-        </div>
-      </div>
-      <div className="weekly-customer-chart-card">
-        <span>内容分布</span>
-        <div className="weekly-customer-bars">
-          {bars.map(([label, value, total]) => (
-            <div className="weekly-customer-bar" key={label}>
-              <span>{label}</span>
-              <div><i style={{ width: `${Math.max(5, Math.round((value / Math.max(1, total)) * 100))}%` }} /></div>
-              <strong>{value}</strong>
-            </div>
-          ))}
         </div>
       </div>
     </div>
@@ -2895,27 +2868,31 @@ function WeeklyConfigModal({
         <div className="weekly-config-modal-head">
           <div>
             <h3>{audienceLabel}配置</h3>
-            <p className="muted">基础信息随项目长期保存，收件人按内部 / 客户周报分别保存。</p>
+            <p className="muted">{audience === "customer" ? "客户周报仅配置状态、收件人和邮件主题。" : "基础信息随项目长期保存，收件人按内部 / 客户周报分别保存。"}</p>
           </div>
           <button type="button" className="weekly-config-close" onClick={onClose} aria-label="关闭周报配置">
             <X aria-hidden="true" />
           </button>
         </div>
         <div className="weekly-config-form">
-          <label className="field">
-            <span>项目经理</span>
-            <input value={draft.projectOwner} onChange={(event) => updateDraft({ projectOwner: event.currentTarget.value })} placeholder="填写项目经理" />
-          </label>
-          <label className="field">
-            <span>实施人员名称</span>
-            <input value={draft.implementationPersonnel} onChange={(event) => updateDraft({ implementationPersonnel: event.currentTarget.value })} placeholder="填写实施人员名称" />
-          </label>
-          <label className="field">
-            <span>项目实施方式</span>
-            <select value={draft.implementationMode} onChange={(event) => updateDraft({ implementationMode: event.currentTarget.value as ProjectImplementationMode })}>
-              {weeklyImplementationModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
-            </select>
-          </label>
+          {audience === "internal" ? (
+            <>
+              <label className="field">
+                <span>项目经理</span>
+                <input value={draft.projectOwner} onChange={(event) => updateDraft({ projectOwner: event.currentTarget.value })} placeholder="填写项目经理" />
+              </label>
+              <label className="field">
+                <span>实施人员名称</span>
+                <input value={draft.implementationPersonnel} onChange={(event) => updateDraft({ implementationPersonnel: event.currentTarget.value })} placeholder="填写实施人员名称" />
+              </label>
+              <label className="field">
+                <span>项目实施方式</span>
+                <select value={draft.implementationMode} onChange={(event) => updateDraft({ implementationMode: event.currentTarget.value as ProjectImplementationMode })}>
+                  {weeklyImplementationModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+                </select>
+              </label>
+            </>
+          ) : null}
           <label className="field">
             <span>项目状态</span>
             <select value={draft.projectStatus} onChange={(event) => updateDraft({ projectStatus: event.currentTarget.value as WeeklyProjectStatus })}>
@@ -2985,7 +2962,7 @@ export function WeeklyPage({
     const riskKey = state.risksIssues
       .filter((item) => item.projectId === project.id)
       .map((item) =>
-        `${item.id}:${item.kind}:${item.title}:${item.severity}:${item.status}:${item.riskVisibility}:${item.responsePlan}:${item.internalHandling}:${item.customerAssistance}:${item.linkedTaskId}`,
+        `${item.id}:${item.kind}:${item.title}:${item.severity}:${item.status}:${item.riskVisibility}:${item.responsePlan}:${item.linkedTaskId}`,
       )
       .join("|");
     const deliverableKey = state.deliverables
@@ -3097,6 +3074,7 @@ export function WeeklyPage({
   const openRisks = projectRisks(state, project.id).filter((item) => item.status !== "closed");
   const customerVisibleRisks = openRisks.filter(isCustomerVisibleRisk);
   const visibleRiskCount = activeAudience === "customer" ? customerVisibleRisks.length : openRisks.length;
+  const customerConfirmationDeliverableCount = projectDeliverables(state, project.id).filter(isCustomerConfirmationDeliverable).length;
   const selectedThisWeekTasks = tasksByIds(allLeafSubtasks, thisWeekTaskIds);
   const unfinishedLeafSubtaskIds = new Set(allLeafSubtasks.filter((task) => task.status !== "done").map((task) => task.id));
   const effectiveNextWeekTaskIds = nextWeekTaskIds.filter((taskId) => unfinishedLeafSubtaskIds.has(taskId));
@@ -3106,7 +3084,7 @@ export function WeeklyPage({
     5,
     metrics.customer +
       customerVisibleRisks.length +
-      projectDeliverables(state, project.id).filter((item) => item.dueDate && item.dueDate <= nextWeek.end).length,
+      customerConfirmationDeliverableCount,
   );
   const recipientCount = recipientsTo ? recipientsTo.split(/[;,，；\s]+/).filter(Boolean).length : 0;
   const personDayBudget = personDays.estimated || personDays.projectBudget || 0;
@@ -3586,7 +3564,7 @@ function weeklyMailDraftLabel(status: string) {
   return "未发送";
 }
 
-export function WeeklyHistoryPage({ state, onPage }: { state: AppState; onPage: (page: PageKey) => void }) {
+export function WeeklyHistoryPage({ state, onPage, onDeleteReport }: { state: AppState; onPage: (page: PageKey) => void; onDeleteReport: (reportId: string) => void }) {
   const project = getProject(state);
   const projectReports = useMemo(
     () =>
@@ -3679,6 +3657,7 @@ export function WeeklyHistoryPage({ state, onPage }: { state: AppState; onPage: 
                 <span>{selectedReport.projectStatus}</span>
                 <span>{selectedReport.implementationMode}</span>
                 <span>{weeklyArchiveLabel(selectedReport.markdownArchiveStatus)}</span>
+                <Button tone="danger" onClick={() => onDeleteReport(selectedReport.id)}>删除周报</Button>
               </div>
             </div>
 

@@ -160,8 +160,6 @@ const riskFieldLabels: Record<string, string> = {
   status: "状态",
   riskVisibility: "可见性",
   responsePlan: "应对措施",
-  internalHandling: "内部处理",
-  customerAssistance: "需客户协助",
   linkedTaskId: "关联任务",
 };
 
@@ -177,7 +175,7 @@ const textFields: Record<EntityType, string[]> = {
   tasks: ["title", "type", "stage", "dimension", "priority", "owner"],
   scopeItems: ["category", "personDayType", "title", "description", "content"],
   deliverables: ["name", "status", "acceptance", "attachmentRequirement", "attachmentName"],
-  risksIssues: ["kind", "title", "severity", "status", "riskVisibility", "responsePlan", "internalHandling", "customerAssistance"],
+  risksIssues: ["kind", "title", "severity", "status", "riskVisibility", "responsePlan"],
   milestones: ["title", "status", "description"],
 };
 
@@ -324,7 +322,7 @@ export function buildProjectDataCommandExtractionMessages(state: AppState, proje
         "createTasks 用于新建任务。每个 task 至少包含 title；可带 code、parentId、parentCode、parentTitle、type、status、stage、dimension、priority、owner、startDate、dueDate、progress。未给 code 时本地自动生成。",
         "updateScopeItems 可改 category、personDayType、title、description、estimatedPersonDays、actualPersonDays、progress、content。",
         "updateDeliverables 可改 name、status、acceptance、dueDate、attachmentRequirement、attachmentName、attachmentPath。",
-        "updateRisksIssues 可改 kind、title、severity、status、riskVisibility、responsePlan、internalHandling、customerAssistance、linkedTaskId。kind 只能 risk/issue，severity 只能 高/中/低，status 只能 open/tracking/closed，riskVisibility 只能 internal/external；只有 external 风险可进入客户周报。",
+        "updateRisksIssues 可改 kind、title、severity、status、riskVisibility、responsePlan、linkedTaskId。kind 只能 risk/issue，severity 只能 高/中/低，status 只能 open/tracking/closed，riskVisibility 只能 internal/external；只有 external 风险可进入客户周报。",
         "updateMilestones 可改 title、dueDate、status、description。",
         "target.scope 可为 all/open/matching；指定记录时尽量用 id、code、title、name 或 query。当前项目范围下不要修改其他项目。",
         "日期必须是 YYYY-MM-DD。用户只写 MM-DD 时使用当前年份。状态枚举：任务 todo/doing/customer/blocked/done。",
@@ -826,8 +824,6 @@ function selectRisksIssues(items: RiskIssue[], target?: CommandTarget) {
     item.status,
     item.riskVisibility,
     item.responsePlan,
-    item.internalHandling,
-    item.customerAssistance,
   ]);
 }
 
@@ -945,8 +941,6 @@ function normalizeRiskChanges(changes: Record<string, unknown>): Partial<RiskIss
   if (kind === "risk" || kind === "issue") next.kind = kind;
   assignString(next, changes, "title");
   assignString(next, changes, "responsePlan");
-  assignString(next, changes, "internalHandling");
-  assignString(next, changes, "customerAssistance");
   assignString(next, changes, "linkedTaskId");
   const riskVisibility = stringValue(changes.riskVisibility);
   if (riskVisibility === "internal" || riskVisibility === "external") next.riskVisibility = riskVisibility;

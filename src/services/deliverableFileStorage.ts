@@ -1,4 +1,4 @@
-import type { Project } from "../types";
+import type { Project, WeeklyReportAudience } from "../types";
 
 export type LocalWritableFile = {
   write(data: Blob): Promise<void>;
@@ -197,6 +197,17 @@ function normalizeMarkdownFileName(fileName: string) {
   return `${normalizedBase}.md`;
 }
 
+function weeklyReportAudienceFolder(audience?: WeeklyReportAudience) {
+  return audience === "customer" ? "客户" : "内部";
+}
+
+async function removeRequiredDirectoryEntry(directory: LocalDirectoryHandle, fileName: string) {
+  if (!directory.removeEntry) {
+    throw new Error("当前浏览器不支持删除目录中的文件。");
+  }
+  await directory.removeEntry(fileName);
+}
+
 function normalizeCsvFileName(fileName: string) {
   const normalizedBase = sanitizePathSegment((fileName || "项目数据").replace(/\.csv$/i, ""));
   return `${normalizedBase}.csv`;
@@ -270,14 +281,17 @@ export async function saveWeeklyReportMarkdownFile({
   storageLabel,
   fileName,
   content,
+  audience,
 }: {
   projectId: string;
   storageLabel?: string;
   fileName: string;
   content: string;
+  audience?: WeeklyReportAudience;
 }): Promise<WeeklyReportMarkdownSaveResult> {
   const record = await resolveWritableProjectDirectory(projectId);
   const weeklyFolderName = "周报";
+  const audienceFolderName = weeklyReportAudienceFolder(audience);
   const safeFileName = normalizeMarkdownFileName(fileName);
 
   try {
@@ -286,7 +300,8 @@ export async function saveWeeklyReportMarkdownFile({
       throw new Error("目录句柄权限已失效，请重新选择交付物保存路径。");
     }
     const weeklyDirectory = await record.handle.getDirectoryHandle(weeklyFolderName, { create: true });
-    const fileHandle = await weeklyDirectory.getFileHandle(safeFileName, { create: true });
+    const audienceDirectory = await weeklyDirectory.getDirectoryHandle(audienceFolderName, { create: true });
+    const fileHandle = await audienceDirectory.getFileHandle(safeFileName, { create: true });
     const writable = await fileHandle.createWritable();
     await writable.write(new Blob([content], { type: "text/markdown;charset=utf-8" }));
     await writable.close();
@@ -298,9 +313,53 @@ export async function saveWeeklyReportMarkdownFile({
   const archivedAt = new Date().toISOString();
   return {
     fileName: safeFileName,
-    filePath: `${pathLabel}/${weeklyFolderName}/${safeFileName}`,
+    filePath: `${pathLabel}/${weeklyFolderName}/${audienceFolderName}/${safeFileName}`,
     archivedAt,
   };
+}
+
+export async function deleteWeeklyReportMarkdownFile({
+  projectId,
+  fileName,
+  filePath,
+  audience,
+}: {
+  projectId: string;
+  fileName?: string;
+  filePath?: string;
+  audience?: WeeklyReportAudience;
+}) {
+  const record = await resolveWritableProjectDirectory(projectId);
+  const weeklyFolderName = "周报";
+  const pathSegments = normalizePath(filePath || "")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const inferredFileName = fileName || pathSegments.at(-1) || "";
+  const safeFileName = normalizeMarkdownFileName(inferredFileName);
+  const inferredAudience = pathSegments.includes("客户") ? "customer" : pathSegments.includes("内部") ? "internal" : audience;
+  const audienceFolderName = weeklyReportAudienceFolder(inferredAudience);
+
+  try {
+    const allowed = await ensureDirectoryWritePermission(record.handle);
+    if (!allowed) {
+      throw new Error("目录授权权限已失效，请重新选择交付物保存路径。");
+    }
+    const weeklyDirectory = await record.handle.getDirectoryHandle(weeklyFolderName);
+    const candidateFolders = [audienceFolderName, audienceFolderName === "客户" ? "内部" : "客户"];
+    for (const folderName of candidateFolders) {
+      try {
+        const audienceDirectory = await weeklyDirectory.getDirectoryHandle(folderName);
+        await removeRequiredDirectoryEntry(audienceDirectory, safeFileName);
+        return;
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+      }
+    }
+    await removeRequiredDirectoryEntry(weeklyDirectory, safeFileName);
+  } catch (error) {
+    throw normalizeFileSystemError(error, "周报 Markdown 删除失败，请重新选择保存路径后重试。");
+  }
 }
 
 export async function saveProjectCsvFile({

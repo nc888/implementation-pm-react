@@ -38,7 +38,7 @@ import { callConfiguredModel, callConfiguredModelStreaming, defaultModelConfig }
 import { loadAiConfigFromFile } from "./services/aiConfigFile";
 import { recordAiGenerationRun } from "./services/aiGenerationAudit";
 import { assistantSessionMessages, assistantSessionProjectId, normalizeAssistantScope } from "./services/assistantSessions";
-import { moveDeliverableAttachmentToStage, saveWeeklyReportMarkdownFile } from "./services/deliverableFileStorage";
+import { deleteWeeklyReportMarkdownFile, moveDeliverableAttachmentToStage, saveWeeklyReportMarkdownFile } from "./services/deliverableFileStorage";
 import { localDateKey, normalizeWeeklyCustomerMailSubject, normalizeWeeklyMailSubject } from "./services/weeklyReportService";
 import {
   applyTaskCommandPlan,
@@ -709,6 +709,7 @@ export function App() {
       storageLabel: targetProject.deliverableStoragePath || "",
       fileName: mailSubject,
       content: normalizedReportInput.content,
+      audience,
     })
       .then((archive) => {
         persistWeeklyReportInput({
@@ -739,6 +740,42 @@ export function App() {
 
   const saveWeeklyPreference = (preference: WeeklyReportPreferenceInput) => {
     setState((current) => (current ? repository.upsertWeeklyReportPreference(current, preference) : current));
+  };
+
+  const deleteWeeklyReport = (reportId: string) => {
+    const report = state.weeklyReports.find((item) => item.id === reportId);
+    if (!report) return;
+    requestConfirm({
+      title: "删除周报归档",
+      description: `确认删除「${report.mailSubject || report.title || report.reportDate}」？将删除历史周报记录，并尝试同步删除已归档的 Markdown 文件。`,
+      confirmText: "删除周报",
+      onConfirm: () => {
+        const removeReportRecord = () => {
+          setState((current) => (current ? { ...current, weeklyReports: current.weeklyReports.filter((item) => item.id !== reportId) } : current));
+        };
+        const shouldDeleteArchive = report.markdownArchiveStatus === "archived" && (report.markdownArchiveFileName || report.markdownArchivePath);
+        if (!shouldDeleteArchive) {
+          removeReportRecord();
+          notify("周报记录已删除。", "danger");
+          return;
+        }
+        void deleteWeeklyReportMarkdownFile({
+          projectId: report.projectId,
+          fileName: report.markdownArchiveFileName,
+          filePath: report.markdownArchivePath,
+          audience: report.audience === "customer" ? "customer" : "internal",
+        })
+          .then(() => {
+            removeReportRecord();
+            notify("周报记录和 Markdown 归档已删除。", "danger");
+          })
+          .catch((error) => {
+            removeReportRecord();
+            const message = error instanceof Error ? error.message : "Markdown 归档文件删除失败。";
+            notify(`周报记录已删除；Markdown 归档删除失败：${message}`, "warning");
+          });
+      },
+    });
   };
 
   const askAi = async (question: string) => {
@@ -984,7 +1021,7 @@ export function App() {
     notify(`模型设置已保存到 ${repository.storageLabel}。`);
   };
 
-  const saveTaskStages = (projectId: string, taskStages: TaskStageDefinition[], milestones: ProjectMilestone[] = []) => {
+  const saveTaskStages = (projectId: string, taskStages: TaskStageDefinition[], milestones?: ProjectMilestone[]) => {
     const draftStages = taskStages.filter((stage) => String(stage.label || "").trim());
     const coefficientTotal = stageCoefficientTotal(draftStages);
     if (coefficientTotal !== draftStages.length) {
@@ -997,11 +1034,14 @@ export function App() {
       const nextLabelById = new Map(normalizedStages.map((stage) => [stage.id, stage.label]));
       const previousStages = stageDefinitionsForProject(current, projectId);
       const previousIdByLabel = new Map(previousStages.map((stage) => [stage.label, stage.id]));
+      const shouldSaveMilestones = Array.isArray(milestones);
       const projectStageConfigs = current.projectStageConfigs.some((config) => config.projectId === projectId)
         ? current.projectStageConfigs.map((config) =>
-            config.projectId === projectId ? { ...config, stages: normalizedStages, milestones, updatedAt: new Date().toISOString() } : config,
+            config.projectId === projectId
+              ? { ...config, stages: normalizedStages, ...(shouldSaveMilestones ? { milestones } : {}), updatedAt: new Date().toISOString() }
+              : config,
           )
-        : [...current.projectStageConfigs, createProjectStageConfig(projectId, normalizedStages, new Date().toISOString(), milestones)];
+        : [...current.projectStageConfigs, createProjectStageConfig(projectId, normalizedStages, new Date().toISOString(), shouldSaveMilestones ? milestones : [])];
       return {
         ...current,
         projectStageConfigs,
@@ -1453,7 +1493,7 @@ export function App() {
       case "weekly":
         return <WeeklyPage state={state} aiService={aiService} onPage={setPage} onSave={saveWeekly} onSavePreference={saveWeeklyPreference} />;
       case "weeklyHistory":
-        return <WeeklyHistoryPage state={state} onPage={setPage} />;
+        return <WeeklyHistoryPage state={state} onPage={setPage} onDeleteReport={deleteWeeklyReport} />;
       case "sow":
         return (
           <SowPage

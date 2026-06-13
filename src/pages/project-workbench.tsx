@@ -382,7 +382,6 @@ function DashboardPageLegacy({ state, aiService }: { state: AppState; aiService:
                 <span className="muted">
                   {riskStatusLabel(item.status)} · {item.responsePlan}
                 </span>
-                {item.customerAssistance ? <span className="muted">需客户协助：{item.customerAssistance}</span> : null}
               </div>
             ))}
             {!openRisks.length ? <div className="empty compact">当前没有打开的风险或问题。</div> : null}
@@ -641,8 +640,6 @@ export function DashboardPage({ state, aiService }: { state: AppState; aiService
                   <p>
                     {projectName(state, item.projectId)} · {riskStatusLabel(item.status)}：{item.responsePlan}
                   </p>
-                  {item.internalHandling ? <p>内部处理：{item.internalHandling}</p> : null}
-                  {item.customerAssistance ? <p>需客户协助：{item.customerAssistance}</p> : null}
                 </div>
               ))}
               {!openRisks.length ? <div className="empty compact">当前没有打开的风险或问题。</div> : null}

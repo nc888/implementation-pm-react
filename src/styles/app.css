@@ -24,6 +24,21 @@
   --purple-soft: #f1f0ff;
   --shadow-card: 0 1px 2px rgba(38, 52, 69, 0.035), 0 10px 26px rgba(38, 52, 69, 0.055);
   --shadow-raised: 0 14px 34px rgba(38, 52, 69, 0.1);
+  --app-background: var(--bg);
+  --nav-surface: rgba(249, 252, 255, 0.94);
+  --sidebar-surface: var(--panel);
+  --topbar-surface: rgba(255, 255, 255, 0.96);
+  --control-hover: #fbfdff;
+  --surface-glow: rgba(63, 115, 216, 0.1);
+  --status-todo: var(--weak);
+  --status-doing: var(--primary);
+  --status-doing-soft: var(--primary-soft);
+  --status-customer: var(--warning);
+  --status-customer-soft: var(--warning-soft);
+  --status-blocked: var(--danger);
+  --status-blocked-soft: var(--danger-soft);
+  --status-done: var(--success);
+  --status-done-soft: var(--success-soft);
   --radius-sm: 6px;
   --radius-md: 8px;
   --primary-nav-height: 58px;
@@ -34,8 +49,125 @@
   color-scheme: light;
 }
 
+html[data-visual-theme="deep-blue"] {
+  --bg: #061120;
+  --bg-strong: #091a31;
+  --panel: rgba(12, 29, 54, 0.9);
+  --panel-soft: rgba(15, 39, 73, 0.76);
+  --panel-muted: rgba(21, 52, 92, 0.64);
+  --line: rgba(88, 145, 228, 0.28);
+  --line-soft: rgba(96, 156, 238, 0.16);
+  --text: #e7f1ff;
+  --muted: #9ab5d3;
+  --weak: #6f8cac;
+  --primary: #4c9cff;
+  --primary-hover: #81bdff;
+  --primary-ink: #04111f;
+  --primary-soft: rgba(76, 156, 255, 0.17);
+  --accent: #2dd4bf;
+  --success: #42d889;
+  --success-soft: rgba(66, 216, 137, 0.13);
+  --warning: #f2b84b;
+  --warning-soft: rgba(242, 184, 75, 0.14);
+  --danger: #ff6b7a;
+  --danger-soft: rgba(255, 107, 122, 0.14);
+  --purple: #9b78ff;
+  --purple-soft: rgba(155, 120, 255, 0.16);
+  --shadow-card: 0 1px 0 rgba(174, 210, 255, 0.06), 0 18px 48px rgba(0, 6, 18, 0.34);
+  --shadow-raised: 0 24px 64px rgba(0, 6, 18, 0.46);
+  --app-background: linear-gradient(135deg, #07182d 0%, #061120 55%, #09162b 100%);
+  --nav-surface: rgba(8, 22, 42, 0.86);
+  --sidebar-surface: rgba(7, 20, 38, 0.78);
+  --topbar-surface: rgba(9, 25, 48, 0.8);
+  --control-hover: rgba(30, 72, 126, 0.6);
+  --surface-glow: rgba(76, 156, 255, 0.22);
+  --dense-table-bg: #08172b;
+  --dense-table-head: #0d2749;
+  --dense-table-row: #0b1d35;
+  --dense-table-row-strong: #12304f;
+  --dense-table-cell: #07172d;
+  --dense-table-cell-active: #183755;
+  --dense-table-border: rgba(127, 176, 244, 0.32);
+  --dense-table-text: #f2f7ff;
+  --dense-table-muted: #b8cee8;
+  --dense-table-pill: #dcecff;
+  --dense-table-pill-text: #0b1d35;
+  --status-todo: #6f8cac;
+  --status-doing: #4c9cff;
+  --status-doing-soft: rgba(76, 156, 255, 0.17);
+  --status-customer: #f2b84b;
+  --status-customer-soft: rgba(242, 184, 75, 0.14);
+  --status-blocked: #ff6b7a;
+  --status-blocked-soft: rgba(255, 107, 122, 0.14);
+  --status-done: #42d889;
+  --status-done-soft: rgba(66, 216, 137, 0.13);
+  color-scheme: dark;
+}
+
+html[data-visual-theme="soft-green"] {
+  --bg: #eef8ef;
+  --bg-strong: #e2f1e5;
+  --panel: rgba(255, 255, 255, 0.86);
+  --panel-soft: rgba(248, 253, 249, 0.78);
+  --panel-muted: rgba(234, 247, 237, 0.82);
+  --line: rgba(121, 170, 142, 0.26);
+  --line-soft: rgba(128, 184, 151, 0.18);
+  --text: #173526;
+  --muted: #5c7867;
+  --weak: #86a093;
+  --primary: #319c58;
+  --primary-hover: #237a43;
+  --primary-ink: #ffffff;
+  --primary-soft: rgba(49, 156, 88, 0.13);
+  --accent: #2fae9a;
+  --success: #258d4f;
+  --success-soft: rgba(37, 141, 79, 0.12);
+  --warning: #a87522;
+  --warning-soft: rgba(249, 236, 203, 0.88);
+  --danger: #c54848;
+  --danger-soft: rgba(255, 239, 239, 0.9);
+  --purple: #6672c9;
+  --purple-soft: rgba(102, 114, 201, 0.12);
+  --shadow-card: 0 1px 2px rgba(27, 64, 42, 0.035), 0 12px 28px rgba(27, 64, 42, 0.07);
+  --shadow-raised: 0 16px 38px rgba(27, 64, 42, 0.13);
+  --app-background: linear-gradient(135deg, #f4fbf4 0%, #edf8f0 52%, #e6f3e8 100%);
+  --nav-surface: rgba(249, 254, 250, 0.88);
+  --sidebar-surface: rgba(244, 251, 246, 0.74);
+  --topbar-surface: rgba(250, 254, 251, 0.82);
+  --control-hover: rgba(255, 255, 255, 0.92);
+  --surface-glow: rgba(49, 156, 88, 0.16);
+  --dense-table-bg: #f5fbf6;
+  --dense-table-head: #dcefe1;
+  --dense-table-row: #ffffff;
+  --dense-table-row-strong: #e8f3ec;
+  --dense-table-cell: #fbfefc;
+  --dense-table-cell-active: #d6eadc;
+  --dense-table-border: rgba(74, 126, 94, 0.24);
+  --dense-table-text: #143524;
+  --dense-table-muted: #4e715e;
+  --dense-table-pill: #e4f1e8;
+  --dense-table-pill-text: #143524;
+  --status-todo: #86a093;
+  --status-doing: #2563eb;
+  --status-doing-soft: rgba(37, 99, 235, 0.13);
+  --status-customer: #a87522;
+  --status-customer-soft: rgba(249, 236, 203, 0.88);
+  --status-blocked: #c54848;
+  --status-blocked-soft: rgba(255, 239, 239, 0.9);
+  --status-done: #258d4f;
+  --status-done-soft: rgba(37, 141, 79, 0.12);
+  color-scheme: light;
+}
+
 * {
   box-sizing: border-box;
+}
+
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  animation: none !important;
+  transition: none !important;
 }
 
 html {
@@ -88,7 +220,7 @@ textarea:focus-visible {
   display: grid;
   place-items: center;
   min-height: 100vh;
-  background: var(--bg);
+  background: var(--app-background);
 }
 
 .boot-card {
@@ -117,7 +249,7 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  background: var(--bg);
+  background: var(--app-background);
 }
 
 .primary-nav {
@@ -131,7 +263,7 @@ textarea:focus-visible {
   height: var(--primary-nav-height);
   padding: 0 18px;
   border-bottom: 1px solid var(--line);
-  background: rgba(249, 252, 255, 0.94);
+  background: var(--nav-surface);
   color: var(--text);
   box-shadow: 0 1px 0 rgba(38, 52, 69, 0.035);
 }
@@ -211,10 +343,91 @@ textarea:focus-visible {
   box-shadow: 0 8px 18px rgba(63, 115, 216, 0.1);
 }
 
+html[data-visual-theme] .primary-tab {
+  color: var(--muted);
+}
+
+html[data-visual-theme] .primary-tab:hover {
+  border-color: var(--line);
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+html[data-visual-theme] .primary-tab.active {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--line));
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+  box-shadow: 0 8px 18px var(--surface-glow);
+}
+
 .primary-actions {
   display: flex;
   gap: 10px;
   align-items: center;
+}
+
+.theme-toggle-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  color: var(--muted);
+  box-shadow: var(--shadow-card);
+  transition:
+    transform 120ms ease,
+    border-color 140ms ease,
+    background 140ms ease,
+    color 140ms ease;
+}
+
+.theme-toggle-button svg {
+  position: relative;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.3;
+}
+
+.theme-toggle-button:hover {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--line));
+  background: var(--control-hover);
+  color: var(--primary);
+  transform: translateY(-1px);
+}
+
+.theme-toggle-button:active {
+  transform: translateY(0);
+}
+
+.theme-toggle-swatch {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 9px;
+  height: 9px;
+  border: 1px solid color-mix(in srgb, var(--panel) 76%, white);
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 15%, transparent);
+}
+
+.theme-toggle-button.deep-blue {
+  background:
+    radial-gradient(circle at 25% 20%, rgba(79, 158, 255, 0.46), transparent 34%),
+    linear-gradient(145deg, rgba(9, 30, 58, 0.96), rgba(5, 14, 29, 0.94));
+  color: #dcecff;
+}
+
+.theme-toggle-button.soft-green {
+  background:
+    radial-gradient(circle at 24% 18%, rgba(68, 174, 105, 0.38), transparent 34%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(229, 244, 232, 0.9));
+  color: #2d7950;
 }
 
 .storage-indicator {
@@ -231,6 +444,11 @@ textarea:focus-visible {
   font-size: 12px;
   font-weight: 750;
   white-space: nowrap;
+}
+
+html[data-visual-theme] .storage-indicator {
+  border-color: var(--line);
+  background: var(--panel-soft);
 }
 
 .storage-indicator svg {
@@ -364,6 +582,42 @@ textarea:focus-visible {
     linear-gradient(145deg, #ffffff, #f5f8fc);
 }
 
+html[data-visual-theme] .nav-action-button {
+  border-color: var(--line);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--panel) 96%, white), color-mix(in srgb, var(--panel-soft) 88%, transparent)),
+    var(--panel);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 36%, transparent),
+    0 8px 18px var(--surface-glow);
+}
+
+html[data-visual-theme] .nav-action-button:hover,
+html[data-visual-theme] .nav-action-button.active {
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--line));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 42%, transparent),
+    0 10px 22px var(--surface-glow);
+}
+
+html[data-visual-theme] .nav-action-button.active {
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--panel) 84%, white), var(--primary-soft)),
+    var(--panel);
+}
+
+html[data-visual-theme] .nav-action-button.ai {
+  background:
+    radial-gradient(circle at 28% 20%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 36%),
+    linear-gradient(145deg, color-mix(in srgb, var(--panel) 88%, white), var(--primary-soft));
+}
+
+html[data-visual-theme] .nav-action-button.settings {
+  background:
+    conic-gradient(from 18deg, color-mix(in srgb, var(--primary) 13%, transparent), transparent 28%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 58%, color-mix(in srgb, var(--text) 7%, transparent), transparent 76%),
+    linear-gradient(145deg, color-mix(in srgb, var(--panel) 90%, white), var(--panel-soft));
+}
+
 .nav-action-button.settings::before {
   inset: 8px;
   border-color: rgba(52, 70, 91, 0.16);
@@ -399,6 +653,16 @@ textarea:focus-visible {
   border-color: #bfd2f5;
   background: #ffffff;
   color: var(--primary-hover);
+}
+
+html[data-visual-theme] .icon-button.dark {
+  border-color: var(--line);
+  background: var(--panel-soft);
+}
+
+html[data-visual-theme] .icon-button.dark:hover {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--line));
+  background: var(--control-hover);
 }
 
 .workspace-shell {
@@ -476,6 +740,20 @@ textarea:focus-visible {
   color: var(--text);
 }
 
+html[data-visual-theme] .rail {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel) 92%, transparent), color-mix(in srgb, var(--panel-soft) 94%, transparent)),
+    var(--sidebar-surface);
+}
+
+html[data-visual-theme] .rail-logo {
+  background: var(--panel);
+}
+
+html[data-visual-theme] .rail-button:hover {
+  background: var(--panel-soft);
+}
+
 .rail-button.active {
   border-color: color-mix(in srgb, var(--primary) 28%, var(--line));
   background: var(--primary-soft);
@@ -505,6 +783,10 @@ textarea:focus-visible {
   border-right: 1px solid var(--line);
   background: var(--panel);
   padding: 12px;
+}
+
+html[data-visual-theme] .sidebar {
+  background: var(--sidebar-surface);
 }
 
 .sidebar-toggle {
@@ -1002,6 +1284,266 @@ input::placeholder {
   opacity: 0.56;
   transform: none;
   box-shadow: none;
+}
+
+html[data-visual-theme] .topbar {
+  background: var(--topbar-surface);
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--surface-glow) 42%, transparent);
+}
+
+html[data-visual-theme] .nav-code {
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+}
+
+html[data-visual-theme] .project-select-trigger:hover,
+html[data-visual-theme] .project-select-trigger[aria-expanded="true"],
+html[data-visual-theme] .button:hover,
+html[data-visual-theme] .lifecycle-action:hover,
+html[data-visual-theme] .overview-action:hover,
+html[data-visual-theme] .status-trigger:hover,
+html[data-visual-theme] .status-trigger[aria-expanded="true"],
+html[data-visual-theme] .model-list-item:hover,
+html[data-visual-theme] .model-list-item.active {
+  background: var(--control-hover);
+}
+
+html[data-visual-theme] .button.primary {
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--primary) 26%, transparent);
+}
+
+html[data-visual-theme] .button.primary:hover {
+  border-color: color-mix(in srgb, var(--primary-hover) 76%, var(--line));
+}
+
+html[data-visual-theme] .button.danger:hover {
+  background: var(--danger-soft);
+}
+
+html[data-visual-theme] .portal-dashboard {
+  --portal-bg: var(--bg-strong);
+  --portal-card: var(--panel);
+  --portal-line: var(--line);
+  --portal-line-strong: var(--line);
+  --portal-text: var(--text);
+  --portal-muted: var(--muted);
+  --portal-weak: var(--weak);
+  --portal-primary: var(--primary);
+  --portal-primary-hover: var(--primary-hover);
+}
+
+html[data-visual-theme] .execution-stats-bar,
+html[data-visual-theme] .overview-all-stats {
+  border-color: var(--line);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel) 92%, transparent), color-mix(in srgb, var(--panel-soft) 86%, transparent)),
+    var(--panel);
+  box-shadow: var(--shadow-card);
+}
+
+html[data-visual-theme] .execution-stats-bar > div,
+html[data-visual-theme] .overview-stat-section {
+  border-color: var(--line-soft);
+}
+
+html[data-visual-theme] .execution-stats-bar strong,
+html[data-visual-theme] .overview-stat-section strong,
+html[data-visual-theme] .overview-stat-section strong small {
+  color: var(--text);
+}
+
+html[data-visual-theme] .workflow-step-shell,
+html[data-visual-theme] .workflow-status-panel,
+html[data-visual-theme] .workflow-upload-zone,
+html[data-visual-theme] .workflow-sow-readable-head,
+html[data-visual-theme] .workflow-context-block,
+html[data-visual-theme] .workflow-context-grid div,
+html[data-visual-theme] .workflow-check-list > div,
+html[data-visual-theme] .compact-parameter-head,
+html[data-visual-theme] .mini-toggle,
+html[data-visual-theme] .unit-segment,
+html[data-visual-theme] .workflow-zoom-head {
+  background: var(--panel-soft);
+}
+
+html[data-visual-theme] .workflow-reset-button,
+html[data-visual-theme] .workflow-step-tooltip,
+html[data-visual-theme] .workflow-step-tooltip::before,
+html[data-visual-theme] .workflow-rich-preview.editable:hover,
+html[data-visual-theme] .workflow-zoom-button:hover,
+html[data-visual-theme] .workflow-zoom-rich,
+html[data-visual-theme] .workflow-zoom-textarea,
+html[data-visual-theme] .workflow-zoom-panel .workflow-zoom-rich.workflow-rich-preview,
+html[data-visual-theme] .unit-segment button.active {
+  background: var(--panel);
+}
+
+html[data-visual-theme] .workflow-upload-zone.loading {
+  background: color-mix(in srgb, var(--primary-soft) 74%, var(--panel));
+}
+
+html[data-visual-theme] .assistant-workbench.card.pad {
+  border-color: var(--line);
+  background: color-mix(in srgb, var(--panel) 70%, var(--bg-strong));
+  box-shadow: var(--shadow-raised);
+}
+
+html[data-visual-theme] .assistant-context-strip,
+html[data-visual-theme] .assistant-model-strip,
+html[data-visual-theme] .assistant-composer,
+html[data-visual-theme] .rich-table-card {
+  background: var(--panel-soft);
+}
+
+html[data-visual-theme] .assistant-chat-shell {
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--primary) 11%, transparent), transparent 32%),
+    var(--bg-strong);
+}
+
+html[data-visual-theme] .assistant-chat-toolbar {
+  border-color: var(--line-soft);
+  background: var(--topbar-surface);
+}
+
+html[data-visual-theme] .assistant-scope-toggle,
+html[data-visual-theme] .toolbar-icon-button,
+html[data-visual-theme] .message-avatar.assistant,
+html[data-visual-theme] .message.assistant,
+html[data-visual-theme] .assistant-composer-inner {
+  border-color: var(--line);
+  background: var(--panel);
+}
+
+html[data-visual-theme] .board-status-pill,
+html[data-visual-theme] .board-task,
+html[data-visual-theme] .board-column .empty.compact,
+html[data-visual-theme] .gantt-row:hover,
+html[data-visual-theme] .wbs-row:not(.wbs-head):hover,
+html[data-visual-theme] .gantt-grid-row:not(.gantt-grid-head):hover {
+  background: var(--panel-soft);
+}
+
+html[data-visual-theme] .gantt-card {
+  color: var(--dense-table-text);
+}
+
+html[data-visual-theme] .wbs-table,
+html[data-visual-theme] .gantt-timeline,
+html[data-visual-theme] .gantt-grid-scroll {
+  border-color: var(--dense-table-border);
+  background: var(--dense-table-bg);
+}
+
+html[data-visual-theme] .wbs-head,
+html[data-visual-theme] .gantt-axis,
+html[data-visual-theme] .gantt-grid-head,
+html[data-visual-theme] .gantt-grid-head .gantt-wbs-cell,
+html[data-visual-theme] .gantt-grid-head .gantt-status-cell {
+  background: var(--dense-table-head);
+  color: var(--dense-table-muted);
+}
+
+html[data-visual-theme] .wbs-row,
+html[data-visual-theme] .gantt-row,
+html[data-visual-theme] .gantt-grid-row,
+html[data-visual-theme] .gantt-grid-cell {
+  border-color: var(--dense-table-border);
+}
+
+html[data-visual-theme] .wbs-row:not(.wbs-head),
+html[data-visual-theme] .gantt-grid-row:not(.gantt-grid-head) {
+  background: var(--dense-table-row);
+}
+
+html[data-visual-theme] .gantt-grid-row.is-parent,
+html[data-visual-theme] .gantt-grid-row.is-parent .gantt-wbs-cell,
+html[data-visual-theme] .gantt-grid-row.is-parent .gantt-status-cell {
+  background: var(--dense-table-row-strong);
+}
+
+html[data-visual-theme] .gantt-grid-row:not(.gantt-grid-head):hover,
+html[data-visual-theme] .wbs-row:not(.wbs-head):hover,
+html[data-visual-theme] .gantt-row:hover {
+  background: var(--dense-table-cell-active);
+}
+
+html[data-visual-theme] .gantt-grid-row:not(.gantt-grid-head):hover .gantt-wbs-cell,
+html[data-visual-theme] .gantt-grid-row:not(.gantt-grid-head):hover .gantt-status-cell {
+  background: var(--dense-table-cell-active);
+}
+
+html[data-visual-theme] .gantt-task-copy strong,
+html[data-visual-theme] .gantt-date,
+html[data-visual-theme] .gantt-date-cell {
+  color: var(--dense-table-text);
+  text-shadow: none;
+}
+
+html[data-visual-theme] .gantt-task-copy .muted,
+html[data-visual-theme] .gantt-owner,
+html[data-visual-theme] .gantt-owner-cell,
+html[data-visual-theme] .gantt-progress-readonly,
+html[data-visual-theme] .gantt-grid-head .gantt-grid-cell,
+html[data-visual-theme] .gantt-axis span {
+  color: var(--dense-table-muted);
+}
+
+html[data-visual-theme] .gantt-track,
+html[data-visual-theme] .gantt-stage-cell,
+html[data-visual-theme] .gantt-wbs-cell,
+html[data-visual-theme] .gantt-status-cell {
+  background:
+    linear-gradient(to right, transparent calc(100% - 1px), var(--dense-table-border) calc(100% - 1px)),
+    var(--dense-table-cell);
+}
+
+html[data-visual-theme] .gantt-stage-cell.active {
+  background: var(--dense-table-cell-active);
+}
+
+html[data-visual-theme] .gantt-status-control,
+html[data-visual-theme] .gantt-progress-input,
+html[data-visual-theme] .gantt-status-select,
+html[data-visual-theme] .progress-value-button,
+html[data-visual-theme] .task-progress-input {
+  border-color: var(--dense-table-border);
+  background: var(--dense-table-cell);
+  color: var(--dense-table-text);
+}
+
+html[data-visual-theme] .gantt-stage-pill,
+html[data-visual-theme] .gantt-bar {
+  background: var(--dense-table-pill);
+  color: var(--dense-table-pill-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dense-table-border) 70%, transparent);
+}
+
+html[data-visual-theme] .gantt-stage-pill > span,
+html[data-visual-theme] .gantt-bar > span {
+  color: var(--dense-table-pill-text);
+  text-shadow: none;
+}
+
+html[data-visual-theme] .gantt-stage-pill.status-blocked,
+html[data-visual-theme] .gantt-bar.status-blocked {
+  background: color-mix(in srgb, var(--danger-soft) 72%, var(--dense-table-pill));
+}
+
+html[data-visual-theme] .gantt-stage-pill.status-customer,
+html[data-visual-theme] .gantt-bar.status-customer {
+  background: color-mix(in srgb, var(--warning-soft) 76%, var(--dense-table-pill));
+}
+
+html[data-visual-theme] .gantt-stage-pill.status-done,
+html[data-visual-theme] .gantt-bar.status-done {
+  background: color-mix(in srgb, var(--success-soft) 78%, var(--dense-table-pill));
+}
+
+html[data-visual-theme="deep-blue"] .gantt-status-control.status-blocked,
+html[data-visual-theme="deep-blue"] .gantt-status-control.status-customer,
+html[data-visual-theme="deep-blue"] .gantt-status-control.status-done,
+html[data-visual-theme="deep-blue"] .gantt-card .badge {
+  color: var(--dense-table-text);
 }
 
 .grid {
@@ -1506,27 +2048,27 @@ input::placeholder {
 
 .status-todo .status-bar-track span,
 .status-todo.status-bar-track span {
-  background: var(--weak);
+  background: var(--status-todo);
 }
 
 .status-doing .status-bar-track span,
 .status-doing.status-bar-track span {
-  background: var(--primary);
+  background: var(--status-doing);
 }
 
 .status-customer .status-bar-track span,
 .status-customer.status-bar-track span {
-  background: var(--warning);
+  background: var(--status-customer);
 }
 
 .status-blocked .status-bar-track span,
 .status-blocked.status-bar-track span {
-  background: var(--danger);
+  background: var(--status-blocked);
 }
 
 .status-done .status-bar-track span,
 .status-done.status-bar-track span {
-  background: var(--success);
+  background: var(--status-done);
 }
 
 .dashboard-table .tree-title {
@@ -1602,18 +2144,18 @@ input::placeholder {
 }
 
 .task-status-control.status-blocked {
-  border-color: color-mix(in srgb, var(--danger) 22%, var(--line));
-  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--status-blocked) 22%, var(--line));
+  background: var(--status-blocked-soft);
 }
 
 .task-status-control.status-customer {
-  border-color: color-mix(in srgb, var(--warning) 26%, var(--line));
-  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--status-customer) 26%, var(--line));
+  background: var(--status-customer-soft);
 }
 
 .task-status-control.status-done {
-  border-color: color-mix(in srgb, var(--success) 22%, var(--line));
-  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--status-done) 22%, var(--line));
+  background: var(--status-done-soft);
 }
 
 .task-status-control select {
@@ -2305,37 +2847,37 @@ input::placeholder {
 }
 
 .board-status-pill.status-doing .board-status-dot {
-  background: var(--primary);
+  background: var(--status-doing);
 }
 
 .board-status-pill.status-customer .board-status-dot {
-  background: var(--warning);
+  background: var(--status-customer);
 }
 
 .board-status-pill.status-blocked .board-status-dot {
-  background: var(--danger);
+  background: var(--status-blocked);
 }
 
 .board-status-pill.status-done .board-status-dot {
-  background: var(--success);
+  background: var(--status-done);
 }
 
 .board-status-pill.status-blocked {
-  border-color: color-mix(in srgb, var(--danger) 24%, var(--line));
-  background: var(--danger-soft);
-  color: var(--danger);
+  border-color: color-mix(in srgb, var(--status-blocked) 24%, var(--line));
+  background: var(--status-blocked-soft);
+  color: var(--status-blocked);
 }
 
 .board-status-pill.status-customer {
-  border-color: color-mix(in srgb, var(--warning) 28%, var(--line));
-  background: var(--warning-soft);
-  color: var(--warning);
+  border-color: color-mix(in srgb, var(--status-customer) 28%, var(--line));
+  background: var(--status-customer-soft);
+  color: var(--status-customer);
 }
 
 .board-status-pill.status-done {
-  border-color: color-mix(in srgb, var(--success) 24%, var(--line));
-  background: var(--success-soft);
-  color: var(--success);
+  border-color: color-mix(in srgb, var(--status-done) 24%, var(--line));
+  background: var(--status-done-soft);
+  color: var(--status-done);
 }
 
 .compact-board {
@@ -2356,23 +2898,23 @@ input::placeholder {
 }
 
 .board-task.status-todo {
-  border-left-color: var(--weak);
+  border-left-color: var(--status-todo);
 }
 
 .board-task.status-doing {
-  border-left-color: var(--primary);
+  border-left-color: var(--status-doing);
 }
 
 .board-task.status-customer {
-  border-left-color: var(--warning);
+  border-left-color: var(--status-customer);
 }
 
 .board-task.status-blocked {
-  border-left-color: var(--danger);
+  border-left-color: var(--status-blocked);
 }
 
 .board-task.status-done {
-  border-left-color: var(--success);
+  border-left-color: var(--status-done);
 }
 
 .board-task-head {
@@ -2573,19 +3115,19 @@ input::placeholder {
 }
 
 .board-subtask.status-doing {
-  border-left-color: var(--primary);
+  border-left-color: var(--status-doing);
 }
 
 .board-subtask.status-customer {
-  border-left-color: var(--warning);
+  border-left-color: var(--status-customer);
 }
 
 .board-subtask.status-blocked {
-  border-left-color: var(--danger);
+  border-left-color: var(--status-blocked);
 }
 
 .board-subtask.status-done {
-  border-left-color: var(--success);
+  border-left-color: var(--status-done);
 }
 
 .board-subtask-main {
@@ -2666,19 +3208,19 @@ input::placeholder {
 }
 
 .board-status-pill.status-doing::after {
-  background: var(--primary);
+  background: var(--status-doing);
 }
 
 .board-status-pill.status-customer::after {
-  background: var(--warning);
+  background: var(--status-customer);
 }
 
 .board-status-pill.status-blocked::after {
-  background: var(--danger);
+  background: var(--status-blocked);
 }
 
 .board-status-pill.status-done::after {
-  background: var(--success);
+  background: var(--status-done);
 }
 
 .board-status-pill.status-blocked,
@@ -2821,22 +3363,22 @@ input::placeholder {
 
 .board-task-status-dot.status-doing,
 .board-subtask-corner-dot.status-doing {
-  background: var(--primary);
+  background: var(--status-doing);
 }
 
 .board-task-status-dot.status-customer,
 .board-subtask-corner-dot.status-customer {
-  background: var(--warning);
+  background: var(--status-customer);
 }
 
 .board-task-status-dot.status-blocked,
 .board-subtask-corner-dot.status-blocked {
-  background: var(--danger);
+  background: var(--status-blocked);
 }
 
 .board-task-status-dot.status-done,
 .board-subtask-corner-dot.status-done {
-  background: var(--success);
+  background: var(--status-done);
 }
 
 .board-task-progress-row {
@@ -3037,19 +3579,19 @@ input::placeholder {
 }
 
 .board-subtask.status-doing .board-subtask-status-icon {
-  color: var(--primary);
+  color: var(--status-doing);
 }
 
 .board-subtask.status-customer .board-subtask-status-icon {
-  color: var(--warning);
+  color: var(--status-customer);
 }
 
 .board-subtask.status-blocked .board-subtask-status-icon {
-  color: var(--danger);
+  color: var(--status-blocked);
 }
 
 .board-subtask.status-done .board-subtask-status-icon {
-  color: var(--success);
+  color: var(--status-done);
 }
 
 .board-subtask-copy {
@@ -3126,6 +3668,75 @@ input::placeholder {
   border-radius: 8px;
   background: #ffffff;
   font-size: 12px;
+}
+
+html[data-visual-theme] .board-column {
+  border-color: var(--line);
+  background: var(--bg-strong);
+}
+
+html[data-visual-theme] .board-task,
+html[data-visual-theme] .board-status-pill,
+html[data-visual-theme] .board-status-pill.status-todo,
+html[data-visual-theme] .board-status-pill.status-doing,
+html[data-visual-theme] .board-status-pill.status-customer,
+html[data-visual-theme] .board-status-pill.status-blocked,
+html[data-visual-theme] .board-status-pill.status-done {
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
+html[data-visual-theme] .board-task:hover,
+html[data-visual-theme] .board-task:focus-within,
+html[data-visual-theme] .board-subtask:hover,
+html[data-visual-theme] .board-subtask:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 22%, var(--line));
+  background: var(--panel-soft);
+}
+
+html[data-visual-theme] .board-expand,
+html[data-visual-theme] .board-column .empty.compact {
+  background: var(--panel);
+  color: var(--muted);
+}
+
+html[data-visual-theme] .board-task-code,
+html[data-visual-theme] .board-owner-mark,
+html[data-visual-theme] .board-task-range,
+html[data-visual-theme] .board-subtasks-summary,
+html[data-visual-theme] .board-subtasks-done,
+html[data-visual-theme] .board-subtask-meta-line span,
+html[data-visual-theme] .board-subtask-meta-line b,
+html[data-visual-theme] .board-status-pill small {
+  color: var(--muted);
+}
+
+html[data-visual-theme] .board-task-title,
+html[data-visual-theme] .board-subtask-copy strong,
+html[data-visual-theme] .board-status-pill strong {
+  color: var(--text);
+}
+
+html[data-visual-theme] .board-owner-mark svg,
+html[data-visual-theme] .board-subtasks-summary svg,
+html[data-visual-theme] .board-subtask-status-icon {
+  color: var(--weak);
+}
+
+html[data-visual-theme] .board-task-progress-row .progress,
+html[data-visual-theme] .board-subtasks-mini {
+  background: var(--line-soft);
+}
+
+html[data-visual-theme] .board-subtasks,
+html[data-visual-theme] .board-subtask-list,
+html[data-visual-theme] .board-subtask {
+  border-color: var(--line-soft);
+}
+
+html[data-visual-theme] .board-subtask-actions {
+  background: linear-gradient(90deg, transparent, var(--panel-soft) 10px, var(--panel-soft));
 }
 
 .task-card {
@@ -3222,19 +3833,19 @@ input::placeholder {
 }
 
 .status-doing .status-dot {
-  background: var(--primary);
+  background: var(--status-doing);
 }
 
 .status-customer .status-dot {
-  background: var(--warning);
+  background: var(--status-customer);
 }
 
 .status-blocked .status-dot {
-  background: var(--danger);
+  background: var(--status-blocked);
 }
 
 .status-done .status-dot {
-  background: var(--success);
+  background: var(--status-done);
 }
 
 .status-menu-popover {
@@ -5741,31 +6352,31 @@ pre {
   width: calc(var(--value) * 1%);
   height: 100%;
   border-radius: inherit;
-  background: var(--primary);
+  background: var(--status-doing);
 }
 
 .gantt-bar.status-blocked {
-  background: var(--danger-soft);
+  background: var(--status-blocked-soft);
 }
 
 .gantt-bar.status-blocked::before {
-  background: var(--danger);
+  background: var(--status-blocked);
 }
 
 .gantt-bar.status-customer {
-  background: var(--warning-soft);
+  background: var(--status-customer-soft);
 }
 
 .gantt-bar.status-customer::before {
-  background: var(--warning);
+  background: var(--status-customer);
 }
 
 .gantt-bar.status-done {
-  background: var(--success-soft);
+  background: var(--status-done-soft);
 }
 
 .gantt-bar.status-done::before {
-  background: var(--success);
+  background: var(--status-done);
 }
 
 .gantt-bar > span {
@@ -5961,18 +6572,18 @@ pre {
 }
 
 .gantt-status-control.status-blocked {
-  border-color: color-mix(in srgb, var(--danger) 22%, var(--line));
-  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--status-blocked) 22%, var(--line));
+  background: var(--status-blocked-soft);
 }
 
 .gantt-status-control.status-customer {
-  border-color: color-mix(in srgb, var(--warning) 26%, var(--line));
-  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--status-customer) 26%, var(--line));
+  background: var(--status-customer-soft);
 }
 
 .gantt-status-control.status-done {
-  border-color: color-mix(in srgb, var(--success) 22%, var(--line));
-  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--status-done) 22%, var(--line));
+  background: var(--status-done-soft);
 }
 
 .gantt-status-control.readonly {
@@ -6047,31 +6658,31 @@ pre {
   width: calc(var(--value) * 1%);
   height: 100%;
   border-radius: inherit;
-  background: var(--primary);
+  background: var(--status-doing);
 }
 
 .gantt-stage-pill.status-blocked {
-  background: var(--danger-soft);
+  background: var(--status-blocked-soft);
 }
 
 .gantt-stage-pill.status-blocked::before {
-  background: var(--danger);
+  background: var(--status-blocked);
 }
 
 .gantt-stage-pill.status-customer {
-  background: var(--warning-soft);
+  background: var(--status-customer-soft);
 }
 
 .gantt-stage-pill.status-customer::before {
-  background: var(--warning);
+  background: var(--status-customer);
 }
 
 .gantt-stage-pill.status-done {
-  background: var(--success-soft);
+  background: var(--status-done-soft);
 }
 
 .gantt-stage-pill.status-done::before {
-  background: var(--success);
+  background: var(--status-done);
 }
 
 .gantt-stage-pill > span {
@@ -6951,30 +7562,30 @@ pre {
 .severity-dot.high,
 .priority-high .severity-dot,
 .mini-status-dot.status-blocked {
-  border-color: color-mix(in srgb, var(--danger) 18%, transparent);
-  background: var(--danger-soft);
-  color: var(--danger);
+  border-color: color-mix(in srgb, var(--status-blocked) 18%, transparent);
+  background: var(--status-blocked-soft);
+  color: var(--status-blocked);
 }
 
 .severity-dot.medium,
 .priority-medium .severity-dot,
 .mini-status-dot.status-customer {
-  border-color: color-mix(in srgb, var(--warning) 22%, transparent);
-  background: var(--warning-soft);
-  color: var(--warning);
+  border-color: color-mix(in srgb, var(--status-customer) 22%, transparent);
+  background: var(--status-customer-soft);
+  color: var(--status-customer);
 }
 
 .severity-dot.low,
 .mini-status-dot.status-done {
-  border-color: color-mix(in srgb, var(--success) 18%, transparent);
-  background: var(--success-soft);
-  color: var(--success);
+  border-color: color-mix(in srgb, var(--status-done) 18%, transparent);
+  background: var(--status-done-soft);
+  color: var(--status-done);
 }
 
 .mini-status-dot.status-doing {
-  border-color: color-mix(in srgb, var(--primary) 18%, transparent);
-  background: var(--primary-soft);
-  color: var(--primary);
+  border-color: color-mix(in srgb, var(--status-doing) 18%, transparent);
+  background: var(--status-doing-soft);
+  color: var(--status-doing);
 }
 
 .overview-all-page {
@@ -7300,23 +7911,23 @@ pre {
 }
 
 .overview-focus-status.status-blocked {
-  border-color: color-mix(in srgb, var(--danger) 18%, transparent);
-  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--status-blocked) 18%, transparent);
+  background: var(--status-blocked-soft);
 }
 
 .overview-focus-status.status-customer {
-  border-color: color-mix(in srgb, var(--warning) 22%, transparent);
-  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--status-customer) 22%, transparent);
+  background: var(--status-customer-soft);
 }
 
 .overview-focus-status.status-doing {
-  border-color: color-mix(in srgb, var(--primary) 18%, transparent);
-  background: var(--primary-soft);
+  border-color: color-mix(in srgb, var(--status-doing) 18%, transparent);
+  background: var(--status-doing-soft);
 }
 
 .overview-focus-status.status-done {
-  border-color: color-mix(in srgb, var(--success) 18%, transparent);
-  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--status-done) 18%, transparent);
+  background: var(--status-done-soft);
 }
 
 .overview-focus-status .status-dot {
@@ -8584,14 +9195,13 @@ pre {
 
 .weekly-customer-visual-summary {
   display: grid;
-  grid-template-columns: 1fr 1fr 1.35fr;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(320px, 1.2fr);
   gap: 12px;
   margin: 0 0 8px;
 }
 
 .weekly-customer-hero-card,
-.weekly-customer-stat-grid,
-.weekly-customer-chart-card {
+.weekly-customer-stat-grid {
   min-width: 0;
   border: 1px solid #dbe6f3;
   border-radius: 10px;
@@ -8610,7 +9220,6 @@ pre {
 }
 
 .weekly-customer-hero-card span,
-.weekly-customer-chart-card > span,
 .weekly-customer-stat-grid span {
   color: #64748b;
   font-size: 12px;
@@ -8660,14 +9269,6 @@ pre {
   font-size: 26px;
   font-weight: 860;
   line-height: 1;
-}
-
-.weekly-customer-chart-card {
-  display: grid;
-  align-content: center;
-  gap: 10px;
-  min-height: 144px;
-  padding: 16px;
 }
 
 .weekly-customer-bars {
@@ -10422,17 +11023,19 @@ pre {
   place-items: center;
   padding: 24px;
   background: rgba(38, 52, 69, 0.22);
-  backdrop-filter: blur(8px);
 }
 
 .modal-panel {
+  display: flex;
+  flex-direction: column;
   width: min(860px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--panel);
   box-shadow: var(--shadow-raised);
+  contain: layout paint;
 }
 
 .modal-panel.compact {
@@ -10473,13 +11076,26 @@ pre {
 }
 
 .modal-form {
-  padding: 20px 22px 22px;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
 }
 
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.modal-form > .form-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 20px 22px 18px;
 }
 
 .form-grid label {
@@ -10572,10 +11188,14 @@ pre {
 }
 
 .modal-actions {
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 18px;
+  margin: 0;
+  padding: 12px 22px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--panel);
 }
 
 .confirm-copy {
@@ -11088,4 +11708,220 @@ pre {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
   }
+}
+
+html[data-visual-theme="deep-blue"] .portal-dashboard {
+  --portal-card: rgba(12, 29, 54, 0.9);
+  --portal-text: #f2f7ff;
+  --portal-muted: #b8cee8;
+  --portal-weak: #8faed0;
+}
+
+html[data-visual-theme="deep-blue"] .project-card,
+html[data-visual-theme="deep-blue"] .work-item,
+html[data-visual-theme="deep-blue"] .compact-signal-item,
+html[data-visual-theme="deep-blue"] .deliverable-track-item,
+html[data-visual-theme="deep-blue"] .scope-group,
+html[data-visual-theme="deep-blue"] .scope-row,
+html[data-visual-theme="deep-blue"] .signal-item {
+  border-color: var(--line);
+  background: rgba(13, 32, 59, 0.92);
+  color: var(--text);
+}
+
+html[data-visual-theme="deep-blue"] .project-card:hover,
+html[data-visual-theme="deep-blue"] .work-item:hover,
+html[data-visual-theme="deep-blue"] .compact-signal-item:hover,
+html[data-visual-theme="deep-blue"] .deliverable-track-item:hover {
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--line));
+  background: rgba(16, 41, 76, 0.96);
+}
+
+html[data-visual-theme="deep-blue"] .project-card h3,
+html[data-visual-theme="deep-blue"] .project-progress-row strong,
+html[data-visual-theme="deep-blue"] .project-personday-strip strong,
+html[data-visual-theme="deep-blue"] .work-item strong,
+html[data-visual-theme="deep-blue"] .compact-signal-line strong,
+html[data-visual-theme="deep-blue"] .deliverable-track-item strong,
+html[data-visual-theme="deep-blue"] .scope-row > span,
+html[data-visual-theme="deep-blue"] .scope-effort-table td > strong,
+html[data-visual-theme="deep-blue"] .health-table td:nth-child(2) strong,
+html[data-visual-theme="deep-blue"] .health-score-mini,
+html[data-visual-theme="deep-blue"] .personday-table-stack strong,
+html[data-visual-theme="deep-blue"] .scope-personday-summary-card strong,
+html[data-visual-theme="deep-blue"] .scope-summary-pairs strong,
+html[data-visual-theme="deep-blue"] .execution-stats-bar strong {
+  color: var(--text);
+}
+
+html[data-visual-theme="deep-blue"] .project-card p,
+html[data-visual-theme="deep-blue"] .project-health-signal,
+html[data-visual-theme="deep-blue"] .project-next-line strong,
+html[data-visual-theme="deep-blue"] .project-next-line span,
+html[data-visual-theme="deep-blue"] .project-personday-strip span,
+html[data-visual-theme="deep-blue"] .project-personday-strip small,
+html[data-visual-theme="deep-blue"] .work-item .muted,
+html[data-visual-theme="deep-blue"] .compact-signal-line > span:not(.badge):not(.mini-status-dot):not(.severity-dot):not(.micro-tag),
+html[data-visual-theme="deep-blue"] .compact-signal-line time,
+html[data-visual-theme="deep-blue"] .compact-signal-item p,
+html[data-visual-theme="deep-blue"] .deliverable-track-item p,
+html[data-visual-theme="deep-blue"] .deliverable-track-item time,
+html[data-visual-theme="deep-blue"] .scope-desc-cell,
+html[data-visual-theme="deep-blue"] .scope-personday-summary-card span,
+html[data-visual-theme="deep-blue"] .scope-personday-summary-card small,
+html[data-visual-theme="deep-blue"] .scope-summary-pairs span,
+html[data-visual-theme="deep-blue"] .scope-summary-pairs b,
+html[data-visual-theme="deep-blue"] .execution-stats-bar span,
+html[data-visual-theme="deep-blue"] .execution-stats-bar small,
+html[data-visual-theme="deep-blue"] .health-table td:nth-child(2) span,
+html[data-visual-theme="deep-blue"] .personday-table-stack span {
+  color: var(--muted);
+}
+
+html[data-visual-theme="deep-blue"] .project-card-menu-trigger,
+html[data-visual-theme="deep-blue"] .project-card-menu-popover,
+html[data-visual-theme="deep-blue"] .project-personday-strip,
+html[data-visual-theme="deep-blue"] .project-card-chips .badge,
+html[data-visual-theme="deep-blue"] .deliverable-tabs span,
+html[data-visual-theme="deep-blue"] .file-type-mark,
+html[data-visual-theme="deep-blue"] .personday-table-stack span,
+html[data-visual-theme="deep-blue"] .scope-group-head,
+html[data-visual-theme="deep-blue"] .scope-group-head button,
+html[data-visual-theme="deep-blue"] .scope-progress-cell .progress,
+html[data-visual-theme="deep-blue"] .overview-focus-status,
+html[data-visual-theme="deep-blue"] .deliverable-choice-trigger,
+html[data-visual-theme="deep-blue"] .deliverable-choice-menu,
+html[data-visual-theme="deep-blue"] .file-upload-button {
+  border-color: var(--line);
+  background: rgba(7, 23, 45, 0.82);
+  color: var(--text);
+}
+
+html[data-visual-theme="deep-blue"] .project-card-menu-popover button {
+  color: var(--text);
+}
+
+html[data-visual-theme="deep-blue"] .project-card-menu-popover button:hover,
+html[data-visual-theme="deep-blue"] .project-card-menu-popover button:focus-visible,
+html[data-visual-theme="deep-blue"] .deliverable-choice-menu button:hover {
+  border-color: var(--line);
+  background: rgba(24, 55, 85, 0.9);
+}
+
+html[data-visual-theme="deep-blue"] .badge,
+html[data-visual-theme="deep-blue"] .micro-tag,
+html[data-visual-theme="deep-blue"] .severity-dot,
+html[data-visual-theme="deep-blue"] .mini-status-dot,
+html[data-visual-theme="deep-blue"] .health-score-mini,
+html[data-visual-theme="deep-blue"] .deliverable-attachment-static {
+  border-color: color-mix(in srgb, currentColor 24%, transparent);
+}
+
+html[data-visual-theme="deep-blue"] .badge:not(.primary):not(.success):not(.warning):not(.danger):not(.purple),
+html[data-visual-theme="deep-blue"] .micro-tag {
+  background: rgba(24, 55, 85, 0.92);
+  color: var(--dense-table-text);
+}
+
+html[data-visual-theme="deep-blue"] .badge.primary,
+html[data-visual-theme="deep-blue"] .deliverable-choice-trigger.tone-primary {
+  background: rgba(76, 156, 255, 0.17);
+  color: #9fcbff;
+}
+
+html[data-visual-theme="deep-blue"] .compact-signal-line > span.badge.primary {
+  background: rgba(76, 156, 255, 0.17);
+  color: #9fcbff;
+}
+
+html[data-visual-theme="deep-blue"] .compact-signal-line > span.badge.success {
+  background: rgba(66, 216, 137, 0.14);
+  color: #7ce7a9;
+}
+
+html[data-visual-theme="deep-blue"] .compact-signal-line > span.badge.warning {
+  background: rgba(242, 184, 75, 0.16);
+  color: #ffd27a;
+}
+
+html[data-visual-theme="deep-blue"] .compact-signal-line > span.badge.danger {
+  background: rgba(255, 107, 122, 0.16);
+  color: #ff9aa7;
+}
+
+html[data-visual-theme="deep-blue"] .compact-signal-line > span.badge.purple {
+  background: rgba(155, 120, 255, 0.18);
+  color: #c9b7ff;
+}
+
+html[data-visual-theme="deep-blue"] .badge.success,
+html[data-visual-theme="deep-blue"] .deliverable-choice-trigger.tone-success,
+html[data-visual-theme="deep-blue"] .deliverable-attachment-static {
+  background: rgba(66, 216, 137, 0.14);
+  color: #7ce7a9;
+}
+
+html[data-visual-theme="deep-blue"] .badge.warning,
+html[data-visual-theme="deep-blue"] .deliverable-choice-trigger.tone-warning {
+  background: rgba(242, 184, 75, 0.16);
+  color: #ffd27a;
+}
+
+html[data-visual-theme="deep-blue"] .badge.danger,
+html[data-visual-theme="deep-blue"] .deliverable-choice-trigger.tone-danger {
+  background: rgba(255, 107, 122, 0.16);
+  color: #ff9aa7;
+}
+
+html[data-visual-theme="deep-blue"] .badge.purple {
+  background: rgba(155, 120, 255, 0.18);
+  color: #c9b7ff;
+}
+
+html[data-visual-theme="deep-blue"] .overview-stat-section.primary,
+html[data-visual-theme="deep-blue"] .execution-stats-bar,
+html[data-visual-theme="deep-blue"] .scope-personday-summary-card.card.pad {
+  border-color: var(--line);
+  background:
+    linear-gradient(180deg, rgba(15, 39, 73, 0.96), rgba(8, 23, 43, 0.96)),
+    var(--panel);
+  box-shadow: var(--shadow-card);
+}
+
+html[data-visual-theme="deep-blue"] .overview-stat-section,
+html[data-visual-theme="deep-blue"] .execution-stats-bar > div,
+html[data-visual-theme="deep-blue"] .scope-personday-summary-card > div {
+  border-color: var(--line-soft);
+}
+
+html[data-visual-theme="deep-blue"] .table th,
+html[data-visual-theme="deep-blue"] .table td {
+  border-color: var(--line-soft);
+}
+
+html[data-visual-theme="deep-blue"] .table th {
+  color: var(--muted);
+}
+
+html[data-visual-theme="deep-blue"] .table tbody tr:hover {
+  background: rgba(24, 55, 85, 0.66);
+}
+
+html[data-visual-theme="deep-blue"] .project-progress-row .progress,
+html[data-visual-theme="deep-blue"] .progress,
+html[data-visual-theme="deep-blue"] .status-bar-track {
+  background: rgba(127, 176, 244, 0.16);
+}
+
+html[data-visual-theme="deep-blue"] .project-card-footer .button,
+html[data-visual-theme="deep-blue"] .button.primary {
+  color: #04111f;
+}
+
+html[data-visual-theme="deep-blue"] .danger-text {
+  color: #ff9aa7;
+}
+
+html[data-visual-theme="deep-blue"] .warning-text {
+  color: #ffd27a;
 }

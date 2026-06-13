@@ -547,15 +547,13 @@ export function buildProjectSnapshot(state: AppState, project = getProject(state
       dimension,
       parentId,
     })),
-    risks: risks.map(({ kind, title, severity, status, riskVisibility, responsePlan, internalHandling, customerAssistance }) => ({
+    risks: risks.map(({ kind, title, severity, status, riskVisibility, responsePlan }) => ({
       kind,
       title,
       severity,
       status,
       riskVisibility,
       responsePlan,
-      internalHandling,
-      customerAssistance,
     })),
     deliverables: deliverables.map(({ code, name, status, acceptance, dueDate }) => ({
       code,

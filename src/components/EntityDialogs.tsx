@@ -807,8 +807,8 @@ export function RiskIssueDialog({
               status: String(form.get("status") || "open") as RiskIssue["status"],
               riskVisibility: String(form.get("riskVisibility") || "internal") as RiskIssue["riskVisibility"],
               responsePlan,
-              internalHandling: String(form.get("internalHandling") || responsePlan).trim(),
-              customerAssistance: String(form.get("customerAssistance") || "").trim(),
+              internalHandling: defaults.internalHandling || responsePlan,
+              customerAssistance: defaults.customerAssistance || "",
               linkedTaskId: String(form.get("linkedTaskId") || ""),
             });
           }}
@@ -872,14 +872,6 @@ export function RiskIssueDialog({
             <label className="wide">
               应对方案
               <textarea name="responsePlan" defaultValue={defaults.responsePlan} />
-            </label>
-            <label className="wide">
-              内部处理
-              <textarea name="internalHandling" defaultValue={defaults.internalHandling || defaults.responsePlan} />
-            </label>
-            <label className="wide">
-              需客户协助
-              <textarea name="customerAssistance" defaultValue={defaults.customerAssistance} />
             </label>
           </div>
           <footer className="modal-actions">
