@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "实施项目管家",
-  "version": "0.1.15",
+  "version": "0.1.19",
   "identifier": "com.local.implementationpm",
   "build": {
     "beforeDevCommand": "npm run dev -- --port 5174",

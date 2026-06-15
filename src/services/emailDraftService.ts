@@ -7,6 +7,7 @@ export type EmailDraftPayload = {
   subject: string;
   content: string;
   htmlContent?: string;
+  displayTitle?: string;
 };
 
 type EmailDraftResponse = {
@@ -253,12 +254,18 @@ function weeklyCustomerMailVisualSummary(content: string) {
   const planCount = countWeeklyMailRowsInSection(content, "下周计划");
   const attentionLevel = attentionCount || riskIssueCount ? "需关注" : "平稳";
   const cardStyle = "height:136px;min-height:136px;box-sizing:border-box;padding:14px;border:1px solid #dbe6f3;border-radius:10px;background:#ffffff;word-break:break-word;overflow-wrap:anywhere";
-  return `<div style="width:100%;max-width:100%;margin:4px 0 18px"><table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;max-width:100%;border-collapse:collapse;table-layout:fixed"><tr><td style="width:36%;padding:0 5px 0 0;vertical-align:top"><div style="${cardStyle};border-left:4px solid #0f766e;background:#f7fbfb"><div style="color:#64748b;font-size:12px;font-weight:700">客户协同看板</div><div style="margin-top:12px;color:#0f766e;font-size:25px;font-weight:800;line-height:1">${attentionLevel}</div><div style="margin-top:10px;color:#334155;font-size:12px;line-height:1.45">${attentionCount ? `${attentionCount} 项需要客户关注或配合` : "暂无需客户额外配合事项"}</div></div></td><td style="width:64%;padding:0 0 0 5px;vertical-align:top"><div style="${cardStyle};padding:0;overflow:hidden"><table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;height:100%;border-collapse:collapse;table-layout:fixed"><tr><td style="padding:10px 6px;border-right:1px solid #edf2f7;text-align:center;vertical-align:middle"><div style="color:#64748b;font-size:12px">本周工作</div><div style="margin-top:9px;color:#172033;font-size:25px;font-weight:800">${workCount}</div></td><td style="padding:10px 6px;border-right:1px solid #edf2f7;text-align:center;vertical-align:middle"><div style="color:#64748b;font-size:12px">风险问题</div><div style="margin-top:9px;color:#172033;font-size:25px;font-weight:800">${riskIssueCount}</div></td><td style="padding:10px 6px;text-align:center;vertical-align:middle"><div style="color:#64748b;font-size:12px">下周计划</div><div style="margin-top:9px;color:#172033;font-size:25px;font-weight:800">${planCount}</div></td></tr></table></div></td></tr></table></div>`;
+  const metricCellStyle = "height:136px;padding:0 6px;text-align:center;vertical-align:middle";
+  const metricContent = (label: string, value: number) => `<table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;height:136px;border-collapse:collapse"><tr><td style="${metricCellStyle}"><div style="margin:0;color:#64748b;font-size:12px;line-height:1.35;text-align:center">${escapeHtml(label)}</div><div style="margin:10px 0 0;color:#172033;font-size:25px;font-weight:800;line-height:1;text-align:center">${value}</div></td></tr></table>`;
+  return `<div style="width:100%;max-width:100%;margin:4px 0 18px"><table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;max-width:100%;border-collapse:collapse;table-layout:fixed"><tr><td style="width:36%;padding:0 5px 0 0;vertical-align:top"><div style="${cardStyle};border-left:4px solid #0f766e;background:#f7fbfb"><div style="color:#64748b;font-size:12px;font-weight:700">客户协同看板</div><div style="margin-top:12px;color:#0f766e;font-size:25px;font-weight:800;line-height:1">${attentionLevel}</div><div style="margin-top:10px;color:#334155;font-size:12px;line-height:1.45">${attentionCount ? `${attentionCount} 项需要客户关注或配合` : "暂无需客户额外配合事项"}</div></div></td><td style="width:64%;padding:0 0 0 5px;vertical-align:top"><div style="${cardStyle};padding:0;overflow:hidden"><table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;height:136px;border-collapse:collapse;table-layout:fixed"><tr><td style="height:136px;padding:0;border-right:1px solid #edf2f7;text-align:center;vertical-align:middle">${metricContent("本周工作", workCount)}</td><td style="height:136px;padding:0;border-right:1px solid #edf2f7;text-align:center;vertical-align:middle">${metricContent("风险问题", riskIssueCount)}</td><td style="height:136px;padding:0;text-align:center;vertical-align:middle">${metricContent("下周计划", planCount)}</td></tr></table></div></td></tr></table></div>`;
 }
 
-export function markdownToMailHtml(content: string) {
+export function markdownToMailHtml(content: string, displayTitle?: string) {
   const lines = content.split(/\r?\n/);
   const html: string[] = [];
+  const title = (displayTitle || "").trim();
+  if (title && !content.trimStart().startsWith("# ")) {
+    html.push(`<h1 style="margin:0 0 18px;color:#172033;font-size:24px;line-height:1.3;font-weight:800">${inlineMarkdownToHtml(title)}</h1>`);
+  }
   if (isCustomerWeeklyMailContent(content)) {
     html.push(weeklyCustomerMailVisualSummary(content));
   }
@@ -373,7 +380,7 @@ export function markdownToMailHtml(content: string) {
 function withHtmlContent(payload: EmailDraftPayload): EmailDraftPayload {
   return {
     ...payload,
-    htmlContent: payload.htmlContent?.trim() || markdownToMailHtml(payload.content),
+    htmlContent: payload.htmlContent?.trim() || markdownToMailHtml(payload.content, payload.displayTitle || payload.subject),
   };
 }
 

@@ -763,6 +763,7 @@ export function App() {
           projectId: report.projectId,
           fileName: report.markdownArchiveFileName,
           filePath: report.markdownArchivePath,
+          storageLabel: state.projects.find((project) => project.id === report.projectId)?.deliverableStoragePath || "",
           audience: report.audience === "customer" ? "customer" : "internal",
         })
           .then(() => {

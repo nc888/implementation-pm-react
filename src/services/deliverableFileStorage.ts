@@ -1,3 +1,4 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Project, WeeklyReportAudience } from "../types";
 
 export type LocalWritableFile = {
@@ -25,9 +26,17 @@ type DirectoryPickerWindow = {
 
 export type DeliverableDirectoryRecord = {
   projectId: string;
-  handle: LocalDirectoryHandle;
+  handle?: LocalDirectoryHandle | null;
   pathLabel: string;
   updatedAt: string;
+  mode?: "browser" | "desktop";
+};
+
+type NativeFileResponse = {
+  ok?: boolean;
+  path?: string;
+  cancelled?: boolean;
+  error?: string;
 };
 
 export type AttachmentSaveResult = {
@@ -61,14 +70,78 @@ export function getDirectoryPicker() {
   return (window as unknown as DirectoryPickerWindow).showDirectoryPicker;
 }
 
-export function getCachedDeliverableDirectory(projectId: string) {
+function isNativeAbsolutePath(value: string | undefined) {
+  const normalized = (value || "").trim();
+  return /^[a-zA-Z]:[\\/]/.test(normalized) || normalized.startsWith("\\\\") || normalized.startsWith("/");
+}
+
+function ensureNativeResponse(response: NativeFileResponse, fallback: string) {
+  if (response.ok && response.path) return response.path;
+  if (response.cancelled) {
+    throw new DOMException("Directory selection was cancelled.", "AbortError");
+  }
+  throw new Error(response.error || fallback);
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function textToBase64(value: string) {
+  return bytesToBase64(new TextEncoder().encode(value));
+}
+
+async function fileToBase64(file: File) {
+  return bytesToBase64(new Uint8Array(await file.arrayBuffer()));
+}
+
+async function writeNativeProjectFile(projectPath: string, relativePath: string, contentBase64: string) {
+  return ensureNativeResponse(
+    await invoke<NativeFileResponse>("write_project_file", {
+      projectPath,
+      relativePath,
+      contentBase64,
+    }),
+    "文件写入失败，请重新选择保存路径后重试。",
+  );
+}
+
+async function deleteNativeProjectFile(projectPath: string, relativePath: string) {
+  ensureNativeResponse(
+    await invoke<NativeFileResponse>("delete_project_file", {
+      projectPath,
+      relativePath,
+    }),
+    "文件删除失败，请重新选择保存路径后重试。",
+  );
+}
+
+async function moveNativeProjectFile(projectPath: string, sourceRelativePath: string, targetRelativePath: string) {
+  return ensureNativeResponse(
+    await invoke<NativeFileResponse>("move_project_file", {
+      projectPath,
+      sourceRelativePath,
+      targetRelativePath,
+    }),
+    "附件移动失败，请重新选择保存路径后重试。",
+  );
+}
+
+export function getCachedDeliverableDirectory(projectId: string): DeliverableDirectoryRecord | null {
   const handle = deliverableDirectoryHandles.get(projectId);
-  if (!handle) return null;
+  const pathLabel = deliverableDirectoryPathLabels.get(projectId);
+  if (!handle && !pathLabel) return null;
   return {
     projectId,
-    handle,
-    pathLabel: deliverableDirectoryPathLabels.get(projectId) || handle.name,
+    handle: handle || null,
+    pathLabel: pathLabel || handle?.name || "",
     updatedAt: "",
+    mode: handle ? "browser" : "desktop",
   } satisfies DeliverableDirectoryRecord;
 }
 
@@ -163,6 +236,23 @@ function normalizeFileSystemError(error: unknown, fallback: string) {
 }
 
 export async function chooseDeliverableProjectDirectory(project: Pick<Project, "id" | "name">) {
+  if (isTauri()) {
+    const pathLabel = ensureNativeResponse(
+      await invoke<NativeFileResponse>("select_deliverable_project_directory", {
+        projectName: project.name,
+      }),
+      "选择保存路径失败。",
+    );
+    deliverableDirectoryPathLabels.set(project.id, pathLabel);
+    return {
+      projectId: project.id,
+      handle: null,
+      pathLabel,
+      updatedAt: new Date().toISOString(),
+      mode: "desktop",
+    } satisfies DeliverableDirectoryRecord;
+  }
+
   const picker = getDirectoryPicker();
   if (!picker) {
     throw new Error("当前浏览器不支持选择本机文件夹。");
@@ -177,10 +267,22 @@ export async function chooseDeliverableProjectDirectory(project: Pick<Project, "
     handle: projectHandle,
     pathLabel,
     updatedAt: new Date().toISOString(),
+    mode: "browser",
   } satisfies DeliverableDirectoryRecord;
 }
 
-async function resolveWritableProjectDirectory(projectId: string) {
+async function resolveWritableProjectDirectory(projectId: string, storageLabel?: string): Promise<DeliverableDirectoryRecord> {
+  const nativeStorageLabel = isNativeAbsolutePath(storageLabel) ? storageLabel : deliverableDirectoryPathLabels.get(projectId);
+  if (isTauri() && isNativeAbsolutePath(nativeStorageLabel)) {
+    deliverableDirectoryPathLabels.set(projectId, nativeStorageLabel || "");
+    return {
+      projectId,
+      handle: null,
+      pathLabel: nativeStorageLabel || "",
+      updatedAt: "",
+      mode: "desktop",
+    } satisfies DeliverableDirectoryRecord;
+  }
   const record = await loadDeliverableDirectoryHandle(projectId);
   if (!record?.handle) {
     throw new Error("请先选择交付物文件保存路径。");
@@ -251,8 +353,30 @@ export async function saveDeliverableAttachmentFile({
   previousAttachmentPath?: string;
   previousAttachmentName?: string;
 }): Promise<AttachmentSaveResult> {
-  const record = await resolveWritableProjectDirectory(projectId);
+  const record = await resolveWritableProjectDirectory(projectId, storageLabel);
   const folderName = sanitizePathSegment(stageLabel);
+  const pathLabel = record.pathLabel || storageLabel || record.handle?.name || "";
+  const attachmentPath = `${pathLabel}/${folderName}/${file.name}`;
+
+  if (record.mode === "desktop") {
+    await writeNativeProjectFile(pathLabel, `${folderName}/${file.name}`, await fileToBase64(file));
+    if (previousAttachmentPath && normalizePath(previousAttachmentPath) !== normalizePath(attachmentPath)) {
+      const ref = parseAttachmentRef(previousAttachmentPath, previousAttachmentName);
+      if (ref?.folderName) {
+        await deleteNativeProjectFile(pathLabel, `${ref.folderName}/${ref.fileName}`);
+      }
+    }
+    return {
+      attachmentName: file.name,
+      attachmentPath,
+      attachmentUploadedAt: new Date().toISOString(),
+    };
+  }
+
+  if (!record.handle) {
+    throw new Error("请先选择交付物文件保存路径。");
+  }
+
   try {
     const stageDirectory = await record.handle.getDirectoryHandle(folderName, { create: true });
     const fileHandle = await stageDirectory.getFileHandle(file.name, { create: true });
@@ -263,8 +387,6 @@ export async function saveDeliverableAttachmentFile({
     throw normalizeFileSystemError(error, "附件保存失败，请重新选择保存路径后重试。");
   }
 
-  const pathLabel = record.pathLabel || storageLabel || record.handle.name;
-  const attachmentPath = `${pathLabel}/${folderName}/${file.name}`;
   if (previousAttachmentPath && normalizePath(previousAttachmentPath) !== normalizePath(attachmentPath)) {
     await removeAttachmentFile(record.handle, previousAttachmentPath, previousAttachmentName);
   }
@@ -289,10 +411,25 @@ export async function saveWeeklyReportMarkdownFile({
   content: string;
   audience?: WeeklyReportAudience;
 }): Promise<WeeklyReportMarkdownSaveResult> {
-  const record = await resolveWritableProjectDirectory(projectId);
+  const record = await resolveWritableProjectDirectory(projectId, storageLabel);
   const weeklyFolderName = "周报";
   const audienceFolderName = weeklyReportAudienceFolder(audience);
   const safeFileName = normalizeMarkdownFileName(fileName);
+  const pathLabel = record.pathLabel || storageLabel || record.handle?.name || "";
+
+  if (record.mode === "desktop") {
+    await writeNativeProjectFile(pathLabel, `${weeklyFolderName}/${audienceFolderName}/${safeFileName}`, textToBase64(content));
+    const archivedAt = new Date().toISOString();
+    return {
+      fileName: safeFileName,
+      filePath: `${pathLabel}/${weeklyFolderName}/${audienceFolderName}/${safeFileName}`,
+      archivedAt,
+    };
+  }
+
+  if (!record.handle) {
+    throw new Error("请先选择交付物文件保存路径。");
+  }
 
   try {
     const allowed = await ensureDirectoryWritePermission(record.handle);
@@ -309,7 +446,6 @@ export async function saveWeeklyReportMarkdownFile({
     throw normalizeFileSystemError(error, "周报 Markdown 归档失败，请重新选择保存路径后重试。");
   }
 
-  const pathLabel = record.pathLabel || storageLabel || record.handle.name;
   const archivedAt = new Date().toISOString();
   return {
     fileName: safeFileName,
@@ -322,14 +458,16 @@ export async function deleteWeeklyReportMarkdownFile({
   projectId,
   fileName,
   filePath,
+  storageLabel,
   audience,
 }: {
   projectId: string;
   fileName?: string;
   filePath?: string;
+  storageLabel?: string;
   audience?: WeeklyReportAudience;
 }) {
-  const record = await resolveWritableProjectDirectory(projectId);
+  const record = await resolveWritableProjectDirectory(projectId, storageLabel);
   const weeklyFolderName = "周报";
   const pathSegments = normalizePath(filePath || "")
     .split("/")
@@ -339,6 +477,16 @@ export async function deleteWeeklyReportMarkdownFile({
   const safeFileName = normalizeMarkdownFileName(inferredFileName);
   const inferredAudience = pathSegments.includes("客户") ? "customer" : pathSegments.includes("内部") ? "internal" : audience;
   const audienceFolderName = weeklyReportAudienceFolder(inferredAudience);
+  const pathLabel = record.pathLabel || storageLabel || record.handle?.name || "";
+
+  if (record.mode === "desktop") {
+    await deleteNativeProjectFile(pathLabel, `${weeklyFolderName}/${audienceFolderName}/${safeFileName}`);
+    return;
+  }
+
+  if (!record.handle) {
+    throw new Error("请先选择交付物文件保存路径。");
+  }
 
   try {
     const allowed = await ensureDirectoryWritePermission(record.handle);
@@ -373,8 +521,23 @@ export async function saveProjectCsvFile({
   fileName: string;
   content: string;
 }): Promise<ProjectCsvSaveResult> {
-  const record = await resolveWritableProjectDirectory(projectId);
+  const record = await resolveWritableProjectDirectory(projectId, storageLabel);
   const safeFileName = normalizeCsvFileName(fileName);
+  const pathLabel = record.pathLabel || storageLabel || record.handle?.name || "";
+
+  if (record.mode === "desktop") {
+    await writeNativeProjectFile(pathLabel, safeFileName, textToBase64(`\uFEFF${content}`));
+    const savedAt = new Date().toISOString();
+    return {
+      fileName: safeFileName,
+      filePath: `${pathLabel}/${safeFileName}`,
+      savedAt,
+    };
+  }
+
+  if (!record.handle) {
+    throw new Error("请先选择交付物文件保存路径。");
+  }
 
   try {
     const allowed = await ensureDirectoryWritePermission(record.handle);
@@ -389,7 +552,6 @@ export async function saveProjectCsvFile({
     throw normalizeFileSystemError(error, "CSV 保存失败，请重新选择保存路径后重试。");
   }
 
-  const pathLabel = record.pathLabel || storageLabel || record.handle.name;
   const savedAt = new Date().toISOString();
   return {
     fileName: safeFileName,
@@ -415,12 +577,21 @@ export async function moveDeliverableAttachmentToStage({
   if (!ref) {
     throw new Error("交付物没有可移动的附件。");
   }
-  const record = await resolveWritableProjectDirectory(projectId);
+  const record = await resolveWritableProjectDirectory(projectId, storageLabel);
   const targetFolderName = sanitizePathSegment(targetStageLabel);
-  const pathLabel = record.pathLabel || storageLabel || record.handle.name;
+  const pathLabel = record.pathLabel || storageLabel || record.handle?.name || "";
   const nextPath = `${pathLabel}/${targetFolderName}/${ref.fileName}`;
   if (ref.folderName === targetFolderName && normalizePath(attachmentPath || "") === normalizePath(nextPath)) {
     return { attachmentName: ref.fileName, attachmentPath: nextPath };
+  }
+
+  if (record.mode === "desktop") {
+    await moveNativeProjectFile(pathLabel, `${ref.folderName}/${ref.fileName}`, `${targetFolderName}/${ref.fileName}`);
+    return { attachmentName: ref.fileName, attachmentPath: nextPath };
+  }
+
+  if (!record.handle) {
+    throw new Error("请先选择交付物文件保存路径。");
   }
 
   let sourceDirectory: LocalDirectoryHandle;

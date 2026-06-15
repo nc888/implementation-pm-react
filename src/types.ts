@@ -205,6 +205,7 @@ export interface WeeklyReportPreference {
   customerRecipientsTo: string;
   customerRecipientsCc: string;
   mailSubjectTemplate: string;
+  customerMailSubjectTemplate: string;
   updatedAt: string;
 }
 

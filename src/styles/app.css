@@ -8615,6 +8615,229 @@ pre {
   color: var(--danger);
 }
 
+.deliverable-directory-backdrop {
+  z-index: 42;
+  background: rgba(30, 42, 57, 0.34);
+  backdrop-filter: blur(8px);
+}
+
+.deliverable-directory-modal {
+  width: min(640px, calc(100vw - 40px));
+  border-color: color-mix(in srgb, var(--line) 82%, var(--primary) 18%);
+  background: var(--panel);
+  box-shadow: 0 24px 72px rgba(24, 36, 52, 0.18);
+}
+
+.deliverable-directory-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  background: linear-gradient(180deg, var(--panel-soft) 0%, var(--panel) 100%);
+}
+
+.deliverable-directory-head h3 {
+  margin: 8px 0 6px;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 760;
+  line-height: 1.25;
+}
+
+.deliverable-directory-head p {
+  max-width: 500px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.deliverable-directory-head .icon-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.deliverable-directory-kicker,
+.directory-current-panel,
+.directory-permission-item,
+.directory-permission-note,
+.deliverable-directory-actions {
+  display: flex;
+  align-items: center;
+}
+
+.deliverable-directory-kicker {
+  gap: 7px;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.deliverable-directory-kicker svg {
+  width: 15px;
+  height: 15px;
+}
+
+.deliverable-directory-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px 24px 20px;
+}
+
+.directory-current-panel {
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--line) 84%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+}
+
+.directory-current-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--line) 72%);
+  border-radius: var(--radius-md);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.directory-current-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.directory-current-copy {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 4px;
+}
+
+.directory-current-copy span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.directory-current-copy strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-status-pill {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1;
+}
+
+.directory-status-pill.ready {
+  border-color: color-mix(in srgb, var(--success) 28%, var(--line) 72%);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.directory-status-pill.unset {
+  border-color: color-mix(in srgb, var(--warning) 30%, var(--line) 70%);
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.directory-permission-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.directory-permission-item {
+  gap: 9px;
+  min-width: 0;
+  min-height: 70px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel-soft) 78%, var(--panel-muted) 22%);
+}
+
+.directory-permission-item > svg {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  color: var(--accent);
+}
+
+.directory-permission-item div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.directory-permission-item strong,
+.directory-permission-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-permission-item strong {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 760;
+}
+
+.directory-permission-item span {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.directory-permission-note {
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--line) 78%);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary-soft) 72%, var(--panel) 28%);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.directory-permission-note svg {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  color: var(--primary);
+}
+
+.deliverable-directory-actions {
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 24px 20px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.deliverable-directory-actions .button {
+  gap: 7px;
+}
+
+.deliverable-directory-actions svg {
+  width: 15px;
+  height: 15px;
+}
+
 .deliverable-name-cell strong,
 .deliverable-linked-task {
   display: block;
@@ -11459,6 +11682,20 @@ pre {
   .workflow-editor-head {
     align-items: flex-start;
     flex-wrap: wrap;
+  }
+
+  .directory-permission-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .directory-current-panel,
+  .deliverable-directory-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .directory-status-pill {
+    align-self: flex-start;
   }
 
   .metrics,

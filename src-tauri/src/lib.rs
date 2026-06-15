@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use tauri::Emitter;
 
@@ -79,6 +79,44 @@ struct BackupSaveResponse {
     ok: bool,
     path: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeFileResponse {
+    ok: bool,
+    path: Option<String>,
+    cancelled: bool,
+    error: Option<String>,
+}
+
+impl NativeFileResponse {
+    fn ok(path: PathBuf) -> Self {
+        Self {
+            ok: true,
+            path: Some(path.to_string_lossy().into_owned()),
+            cancelled: false,
+            error: None,
+        }
+    }
+
+    fn cancelled() -> Self {
+        Self {
+            ok: false,
+            path: None,
+            cancelled: true,
+            error: None,
+        }
+    }
+
+    fn error(message: String) -> Self {
+        Self {
+            ok: false,
+            path: None,
+            cancelled: false,
+            error: Some(message),
+        }
+    }
 }
 
 fn parse_email_list(value: &str) -> Vec<String> {
@@ -262,6 +300,210 @@ fn save_backup_file(file_name: String, content: String) -> BackupSaveResponse {
             path: None,
             error: Some(error),
         },
+    }
+}
+
+fn safe_path_segment(value: &str, fallback: &str) -> String {
+    let cleaned = value
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+    if cleaned.is_empty() {
+        fallback.to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn ensure_project_root(project_path: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(project_path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("请先选择交付物文件保存路径。".to_string());
+    }
+    fs::create_dir_all(&path).map_err(|error| format!("创建项目目录失败：{}", error))?;
+    path.canonicalize()
+        .map_err(|error| format!("无法访问项目目录：{}", error))
+}
+
+fn resolve_project_file(project_path: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let root = ensure_project_root(project_path)?;
+    let relative = Path::new(relative_path);
+    if relative.is_absolute() {
+        return Err("文件路径必须位于项目目录内。".to_string());
+    }
+
+    let mut target = root.clone();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => target.push(part),
+            Component::CurDir => {}
+            _ => return Err("文件路径必须位于项目目录内。".to_string()),
+        }
+    }
+
+    Ok(target)
+}
+
+fn write_project_file_inner(project_path: String, relative_path: String, content_base64: String) -> Result<PathBuf, String> {
+    let target = resolve_project_file(&project_path, &relative_path)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("创建文件目录失败：{}", error))?;
+    }
+    let bytes = general_purpose::STANDARD
+        .decode(content_base64.as_bytes())
+        .map_err(|error| format!("文件内容编码无效：{}", error))?;
+    fs::write(&target, bytes).map_err(|error| format!("写入文件失败：{}", error))?;
+    Ok(target)
+}
+
+fn delete_project_file_inner(project_path: String, relative_path: String) -> Result<PathBuf, String> {
+    let target = resolve_project_file(&project_path, &relative_path)?;
+    if target.exists() {
+        fs::remove_file(&target).map_err(|error| format!("删除文件失败：{}", error))?;
+    }
+    Ok(target)
+}
+
+fn move_project_file_inner(project_path: String, source_relative_path: String, target_relative_path: String) -> Result<PathBuf, String> {
+    let source = resolve_project_file(&project_path, &source_relative_path)?;
+    let target = resolve_project_file(&project_path, &target_relative_path)?;
+    if source == target {
+        return Ok(target);
+    }
+    if !source.exists() {
+        return Err("未找到原附件文件，请重新上传附件。".to_string());
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("创建附件目录失败：{}", error))?;
+    }
+    fs::copy(&source, &target).map_err(|error| format!("复制附件失败：{}", error))?;
+    let _ = fs::remove_file(&source);
+    Ok(target)
+}
+
+#[cfg(target_os = "windows")]
+fn pick_native_folder() -> Result<Option<PathBuf>, String> {
+    use windows::core::HSTRING;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FOS_PATHMUSTEXIST,
+        SIGDN_FILESYSPATH,
+    };
+
+    const HRESULT_CANCELLED: i32 = 0x800704C7_u32 as i32;
+
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            .ok()
+            .map_err(|error| format!("初始化系统文件选择器失败：{}", error))?;
+        struct ComGuard;
+        impl Drop for ComGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    CoUninitialize();
+                }
+            }
+        }
+        let _guard = ComGuard;
+
+        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+            .map_err(|error| format!("打开系统文件选择器失败：{}", error))?;
+        let options = dialog
+            .GetOptions()
+            .map_err(|error| format!("读取文件选择器配置失败：{}", error))?;
+        dialog
+            .SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST)
+            .map_err(|error| format!("设置文件选择器配置失败：{}", error))?;
+        dialog
+            .SetTitle(&HSTRING::from("选择项目交付物保存目录"))
+            .map_err(|error| format!("设置文件选择器标题失败：{}", error))?;
+        dialog
+            .SetOkButtonLabel(&HSTRING::from("选择此文件夹"))
+            .map_err(|error| format!("设置文件选择器按钮失败：{}", error))?;
+
+        if let Err(error) = dialog.Show(None) {
+            if error.code().0 == HRESULT_CANCELLED {
+                return Ok(None);
+            }
+            return Err(format!("选择目录失败：{}", error));
+        }
+
+        let item = dialog.GetResult().map_err(|error| format!("读取选择目录失败：{}", error))?;
+        let raw_path = item
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .map_err(|error| format!("读取目录路径失败：{}", error))?;
+        let path = raw_path
+            .to_string()
+            .map_err(|error| format!("目录路径编码无效：{}", error))?;
+        CoTaskMemFree(Some(raw_path.as_ptr() as _));
+        Ok(Some(PathBuf::from(path)))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn pick_native_folder() -> Result<Option<PathBuf>, String> {
+    Err("当前桌面平台暂不支持原生目录选择器，请使用浏览器版本选择保存路径。".to_string())
+}
+
+#[tauri::command]
+async fn select_deliverable_project_directory(project_name: String) -> NativeFileResponse {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let Some(base_path) = pick_native_folder()? else {
+            return Ok(None);
+        };
+        let project_dir = base_path.join(safe_path_segment(&project_name, "项目交付物"));
+        fs::create_dir_all(&project_dir).map_err(|error| format!("创建项目目录失败：{}", error))?;
+        project_dir
+            .canonicalize()
+            .map(Some)
+            .map_err(|error| format!("无法访问项目目录：{}", error))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(Some(path))) => NativeFileResponse::ok(path),
+        Ok(Ok(None)) => NativeFileResponse::cancelled(),
+        Ok(Err(error)) => NativeFileResponse::error(error),
+        Err(error) => NativeFileResponse::error(format!("选择目录任务执行失败：{}", error)),
+    }
+}
+
+#[tauri::command]
+async fn write_project_file(project_path: String, relative_path: String, content_base64: String) -> NativeFileResponse {
+    match tauri::async_runtime::spawn_blocking(move || write_project_file_inner(project_path, relative_path, content_base64)).await {
+        Ok(Ok(path)) => NativeFileResponse::ok(path),
+        Ok(Err(error)) => NativeFileResponse::error(error),
+        Err(error) => NativeFileResponse::error(format!("写入文件任务执行失败：{}", error)),
+    }
+}
+
+#[tauri::command]
+async fn delete_project_file(project_path: String, relative_path: String) -> NativeFileResponse {
+    match tauri::async_runtime::spawn_blocking(move || delete_project_file_inner(project_path, relative_path)).await {
+        Ok(Ok(path)) => NativeFileResponse::ok(path),
+        Ok(Err(error)) => NativeFileResponse::error(error),
+        Err(error) => NativeFileResponse::error(format!("删除文件任务执行失败：{}", error)),
+    }
+}
+
+#[tauri::command]
+async fn move_project_file(project_path: String, source_relative_path: String, target_relative_path: String) -> NativeFileResponse {
+    match tauri::async_runtime::spawn_blocking(move || move_project_file_inner(project_path, source_relative_path, target_relative_path)).await {
+        Ok(Ok(path)) => NativeFileResponse::ok(path),
+        Ok(Err(error)) => NativeFileResponse::error(error),
+        Err(error) => NativeFileResponse::error(format!("移动附件任务执行失败：{}", error)),
     }
 }
 
@@ -503,6 +745,10 @@ pub fn run() {
         .plugin(tauri_plugin_sql::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             save_backup_file,
+            select_deliverable_project_directory,
+            write_project_file,
+            delete_project_file,
+            move_project_file,
             save_email_draft,
             model_http_request,
             model_http_stream_request

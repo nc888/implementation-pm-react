@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, JSX } from "react";
 import { createPortal } from "react-dom";
+import { isTauri } from "@tauri-apps/api/core";
 import {
   AlertCircle,
   ArrowLeft,
@@ -12,8 +13,10 @@ import {
   CircleCheck,
   ClipboardList,
   Clock,
+  FolderCheck,
   FolderOpen,
   Eye,
+  HardDrive,
   History,
   Mail,
   Maximize2,
@@ -25,6 +28,7 @@ import {
   Save,
   Search,
   Send,
+  ShieldCheck,
   Upload,
   UserCircle,
   X,
@@ -86,7 +90,7 @@ import {
   formatDateRange,
   getLeafSubtasks,
   isCustomerConfirmationDeliverable,
-  isCustomerVisibleRisk,
+  isCustomerVisibleRiskIssue,
   nextWeekRangeFor,
   normalizeWeeklyCustomerMailSubject,
   normalizeWeeklyMailSubject,
@@ -1817,6 +1821,114 @@ function csvContent(headers: string[], rows: unknown[][]) {
   return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
 }
 
+function DeliverableDirectorySetupDialog({
+  projectName,
+  currentStorageLabel,
+  isConfigured,
+  isDesktopApp,
+  isChoosing,
+  onClose,
+  onChoose,
+}: {
+  projectName: string;
+  currentStorageLabel: string;
+  isConfigured: boolean;
+  isDesktopApp: boolean;
+  isChoosing: boolean;
+  onClose: () => void;
+  onChoose: () => void;
+}) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !isChoosing) onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isChoosing, onClose]);
+
+  return (
+    <div
+      className="modal-backdrop deliverable-directory-backdrop"
+      role="presentation"
+      onMouseDown={() => {
+        if (!isChoosing) onClose();
+      }}
+    >
+      <section
+        className="modal-panel deliverable-directory-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="deliverableDirectoryDialogTitle"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="deliverable-directory-head">
+          <div>
+            <div className="deliverable-directory-kicker">
+              <ShieldCheck aria-hidden="true" />
+              项目文件权限
+            </div>
+            <h3 id="deliverableDirectoryDialogTitle">配置项目交付物目录</h3>
+            <p>为「{projectName}」指定一个本机目录，附件、周报归档和 CSV 会统一写入这里。</p>
+          </div>
+          <button type="button" className="icon-button" aria-label="关闭目录配置" onClick={onClose} disabled={isChoosing}>
+            <X aria-hidden="true" />
+          </button>
+        </header>
+
+        <div className="deliverable-directory-body">
+          <div className="directory-current-panel">
+            <div className="directory-current-icon">
+              {isConfigured ? <FolderCheck aria-hidden="true" /> : <FolderOpen aria-hidden="true" />}
+            </div>
+            <div className="directory-current-copy">
+              <span>当前目录</span>
+              <strong title={currentStorageLabel}>{isConfigured ? currentStorageLabel : "尚未配置项目保存路径"}</strong>
+            </div>
+            <span className={`directory-status-pill ${isConfigured ? "ready" : "unset"}`}>{isConfigured ? "已配置" : "待配置"}</span>
+          </div>
+
+          <div className="directory-permission-grid" aria-label="目录用途">
+            <div className="directory-permission-item">
+              <Paperclip aria-hidden="true" />
+              <div>
+                <strong>交付物附件</strong>
+                <span>按任务阶段归档</span>
+              </div>
+            </div>
+            <div className="directory-permission-item">
+              <Mail aria-hidden="true" />
+              <div>
+                <strong>周报归档</strong>
+                <span>内部与客户版本分开保存</span>
+              </div>
+            </div>
+            <div className="directory-permission-item">
+              <HardDrive aria-hidden="true" />
+              <div>
+                <strong>项目 CSV</strong>
+                <span>交付物、风险问题列表同步覆盖</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="directory-permission-note">
+            <AlertCircle aria-hidden="true" />
+            <span>{isDesktopApp ? "桌面版将使用系统文件夹选择器，并自动创建项目同名目录。" : "浏览器版将在下一步请求文件夹写入权限，并自动创建项目同名目录。"}</span>
+          </div>
+        </div>
+
+        <footer className="deliverable-directory-actions">
+          <Button tone="ghost" onClick={onClose} disabled={isChoosing}>取消</Button>
+          <Button tone="primary" onClick={onChoose} disabled={isChoosing}>
+            <FolderOpen aria-hidden="true" />
+            {isChoosing ? "正在打开..." : "选择本机文件夹"}
+          </Button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
 export function DeliverablesPage({
   state,
   onAddDeliverable,
@@ -1839,6 +1951,8 @@ export function DeliverablesPage({
   const deliverables = projectDeliverables(state).filter((item) => deliverableMatchesSearch(state, item));
   const [directoryHandle, setDirectoryHandle] = useState<LocalDirectoryHandle | null>(() => getCachedDeliverableDirectory(project.id)?.handle || null);
   const [storageMessage, setStorageMessage] = useState<{ tone: "success" | "warning" | "danger"; text: string } | null>(null);
+  const [directoryDialogOpen, setDirectoryDialogOpen] = useState(false);
+  const [directoryChoosing, setDirectoryChoosing] = useState(false);
   const deliverableAcceptanceOptions = ["待确认", "待验收", "待评审", "客户确认", "客户验收", "内部确认", "已验收", "未提交"];
   const attachmentUploadStateOptions: Array<{ value: NonNullable<Deliverable["attachmentRequirement"]>; label: string }> = [
     { value: "required", label: "未上传" },
@@ -1866,6 +1980,8 @@ export function DeliverablesPage({
 
   const resolveLinkedTask = (item: Deliverable) => (item.linkedTaskId ? taskById.get(item.linkedTaskId) : undefined) || taskByCode.get(item.code);
   const currentStorageLabel = project.deliverableStoragePath || getDeliverableDirectoryPathLabel(project.id) || directoryHandle?.name || "未配置保存路径";
+  const isStorageConfigured = currentStorageLabel !== "未配置保存路径";
+  const isDesktopRuntime = isTauri();
   const attachmentRequirement = (item: Deliverable): NonNullable<Deliverable["attachmentRequirement"]> => item.attachmentRequirement || "required";
   const acceptanceTone = (value: string) => {
     if (/已验收|内部确认/.test(value)) return "success";
@@ -1903,15 +2019,19 @@ export function DeliverablesPage({
   }) => <InlineChoiceEditor value={value} options={options} label={label} tone={tone} minWidth={minWidth} openOn={openOn} onChange={onChange} />;
 
   const chooseDirectory = async () => {
+    setDirectoryChoosing(true);
     try {
       const record = await chooseDeliverableProjectDirectory(project);
-      setDirectoryHandle(record.handle);
+      setDirectoryHandle(record.handle || null);
       await onSaveDeliverableStoragePath(project.id, record.pathLabel);
       setStorageMessage({ tone: "success", text: `保存路径已配置：${record.pathLabel}` });
+      setDirectoryDialogOpen(false);
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") return;
       const message = error instanceof Error ? error.message : "选择保存路径失败。";
       setStorageMessage({ tone: "danger", text: message });
+    } finally {
+      setDirectoryChoosing(false);
     }
   };
 
@@ -2037,6 +2157,7 @@ export function DeliverablesPage({
   );
 
   return (
+    <>
     <Card className="pad compact-ledger-card">
       <div className="table-toolbar compact">
         <div>
@@ -2048,7 +2169,7 @@ export function DeliverablesPage({
           </div>
         </div>
         <div className="deliverable-toolbar-actions">
-          <Button tone="ghost" onClick={chooseDirectory}>
+          <Button tone="ghost" onClick={() => setDirectoryDialogOpen(true)}>
             <FolderOpen aria-hidden="true" />
             选择保存路径
           </Button>
@@ -2109,6 +2230,18 @@ export function DeliverablesPage({
         </tbody>
       </table>
     </Card>
+    {directoryDialogOpen ? (
+      <DeliverableDirectorySetupDialog
+        projectName={project.name}
+        currentStorageLabel={currentStorageLabel}
+        isConfigured={isStorageConfigured}
+        isDesktopApp={isDesktopRuntime}
+        isChoosing={directoryChoosing}
+        onClose={() => setDirectoryDialogOpen(false)}
+        onChoose={() => void chooseDirectory()}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -2564,12 +2697,22 @@ function isWeeklyPreviewBlockStart(lines: string[], index: number) {
   return !line.trim() || /^报告日期：|^统计周期：/.test(line.trim()) || /^#{1,4}\s+/.test(line) || /^\d+[.)]\s+/.test(line) || /^[-*]\s+/.test(line) || isMarkdownTableStart(lines, index);
 }
 
-function WeeklyDraftPreview({ content, audience = "internal" }: { content: string; audience?: WeeklyReportAudience }) {
+function WeeklyDraftPreview({ content, audience = "internal", displayTitle = "" }: { content: string; audience?: WeeklyReportAudience; displayTitle?: string }) {
   const lines = content.split(/\r?\n/);
   const blocks: JSX.Element[] = [];
   let index = 0;
   let currentHeading = "";
   let visualSummaryInserted = false;
+  const title = displayTitle.trim();
+
+  if (title && !content.trimStart().startsWith("# ")) {
+    blocks.push(
+      <header className="weekly-preview-cover" key="weekly-preview-display-title">
+        <span>{weeklyAudienceLabel(audience)}</span>
+        <h1>{renderInlineMarkdown(title)}</h1>
+      </header>,
+    );
+  }
 
   if (audience === "customer") {
     blocks.push(<WeeklyCustomerVisualSummary content={content} key="customer-visual-summary" />);
@@ -2701,6 +2844,7 @@ function WeeklyDraftFullscreen({
   content,
   mode,
   audience = "internal",
+  displayTitle = "",
   onModeChange,
   onChange,
   onClose,
@@ -2708,6 +2852,7 @@ function WeeklyDraftFullscreen({
   content: string;
   mode: "preview" | "edit";
   audience?: WeeklyReportAudience;
+  displayTitle?: string;
   onModeChange: (mode: "preview" | "edit") => void;
   onChange: (content: string) => void;
   onClose: () => void;
@@ -2742,7 +2887,7 @@ function WeeklyDraftFullscreen({
             <textarea className="weekly-draft-textarea fullscreen" value={content} onChange={(event) => onChange(event.target.value)} />
           ) : (
             <div className="weekly-preview-shell fullscreen">
-              <WeeklyDraftPreview content={content} audience={audience} />
+              <WeeklyDraftPreview content={content} audience={audience} displayTitle={displayTitle} />
             </div>
           )}
         </div>
@@ -2755,10 +2900,12 @@ function WeeklyDraftFullscreen({
 function WeeklyDraftComposer({
   content,
   audience = "internal",
+  displayTitle = "",
   onChange,
 }: {
   content: string;
   audience?: WeeklyReportAudience;
+  displayTitle?: string;
   onChange: (content: string) => void;
 }) {
   const [mode, setMode] = useState<"preview" | "edit">("preview");
@@ -2786,7 +2933,7 @@ function WeeklyDraftComposer({
         <textarea className="weekly-draft-textarea" value={content} onChange={(event) => onChange(event.target.value)} />
       ) : (
         <div className="weekly-preview-shell">
-          <WeeklyDraftPreview content={content} audience={audience} />
+          <WeeklyDraftPreview content={content} audience={audience} displayTitle={displayTitle} />
         </div>
       )}
       {fullscreen ? (
@@ -2794,6 +2941,7 @@ function WeeklyDraftComposer({
           content={content}
           mode={mode}
           audience={audience}
+          displayTitle={displayTitle}
           onModeChange={setMode}
           onChange={onChange}
           onClose={() => setFullscreen(false)}
@@ -2978,7 +3126,7 @@ export function WeeklyPage({
   const latestProjectReport = audienceReports[0];
   const projectPreference = state.weeklyReportPreferences.find((preference) => preference.projectId === project.id);
   const projectPreferenceKey = projectPreference
-    ? `${projectPreference.projectId}:${projectPreference.projectOwner}:${projectPreference.implementationPersonnel}:${projectPreference.implementationMode}:${projectPreference.projectStatus}:${projectPreference.recipientsTo}:${projectPreference.recipientsCc}:${projectPreference.customerRecipientsTo}:${projectPreference.customerRecipientsCc}:${projectPreference.mailSubjectTemplate}:${projectPreference.updatedAt}`
+    ? `${projectPreference.projectId}:${projectPreference.projectOwner}:${projectPreference.implementationPersonnel}:${projectPreference.implementationMode}:${projectPreference.projectStatus}:${projectPreference.recipientsTo}:${projectPreference.recipientsCc}:${projectPreference.customerRecipientsTo}:${projectPreference.customerRecipientsCc}:${projectPreference.mailSubjectTemplate}:${projectPreference.customerMailSubjectTemplate}:${projectPreference.updatedAt}`
     : "";
   const reportDate = selectedReport?.reportDate || today;
   const reportDateObject = new Date(`${reportDate}T00:00:00`);
@@ -3002,12 +3150,17 @@ export function WeeklyPage({
       ? projectPreference.customerRecipientsCc
       : projectPreference.recipientsCc
     : selectedReport?.recipientsCc ?? latestProjectReport?.recipientsCc ?? "";
-  const preferredMailSubject = selectedReport
+  const preferredSubjectTemplate = activeAudience === "customer" ? projectPreference?.customerMailSubjectTemplate : projectPreference?.mailSubjectTemplate;
+  const preferredSubjectFromTemplate = projectPreference ? buildWeeklyMailSubjectFromTemplate(preferredSubjectTemplate, project, reportDate) : "";
+  const shouldUsePreferenceSubject = Boolean(projectPreference && preferredSubjectFromTemplate);
+  const preferredMailSubject = shouldUsePreferenceSubject
+    ? normalizeWeeklySubjectByAudience(activeAudience, project, reportDate, preferredSubjectFromTemplate)
+    : selectedReport
     ? normalizeWeeklySubjectByAudience(activeAudience, project, reportDate, selectedReport.mailSubject || selectedReport.title)
     : projectPreference
       ? activeAudience === "internal"
         ? buildWeeklyMailSubjectFromTemplate(projectPreference.mailSubjectTemplate, project, reportDate) || buildWeeklyMailSubject(project, reportDate)
-        : buildWeeklyCustomerMailSubject(project, reportDate)
+        : buildWeeklyMailSubjectFromTemplate(projectPreference.customerMailSubjectTemplate, project, reportDate) || buildWeeklyCustomerMailSubject(project, reportDate)
       : buildWeeklyMailSubjectFromTemplate(
           latestProjectReport ? weeklyMailSubjectToTemplate(latestProjectReport.mailSubject, latestProjectReport.reportDate) : "",
           project,
@@ -3072,7 +3225,7 @@ export function WeeklyPage({
   const metrics = calcProjectMetrics(state, project);
   const personDays = calcProjectPersonDays(state, project);
   const openRisks = projectRisks(state, project.id).filter((item) => item.status !== "closed");
-  const customerVisibleRisks = openRisks.filter(isCustomerVisibleRisk);
+  const customerVisibleRisks = openRisks.filter(isCustomerVisibleRiskIssue);
   const visibleRiskCount = activeAudience === "customer" ? customerVisibleRisks.length : openRisks.length;
   const customerConfirmationDeliverableCount = projectDeliverables(state, project.id).filter(isCustomerConfirmationDeliverable).length;
   const selectedThisWeekTasks = tasksByIds(allLeafSubtasks, thisWeekTaskIds);
@@ -3167,12 +3320,17 @@ export function WeeklyPage({
         ? projectPreference.customerRecipientsCc
         : projectPreference.recipientsCc
       : nextReport?.recipientsCc ?? latestReport?.recipientsCc ?? "";
-    const subject = nextReport
+    const preferenceSubjectTemplate = activeAudience === "customer" ? projectPreference?.customerMailSubjectTemplate : projectPreference?.mailSubjectTemplate;
+    const preferenceSubject = projectPreference ? buildWeeklyMailSubjectFromTemplate(preferenceSubjectTemplate, project, nextReportDate) : "";
+    const usePreferenceSubject = Boolean(projectPreference && preferenceSubject);
+    const subject = usePreferenceSubject
+      ? normalizeWeeklySubjectByAudience(activeAudience, project, nextReportDate, preferenceSubject)
+      : nextReport
       ? normalizeWeeklySubjectByAudience(activeAudience, project, nextReportDate, nextReport.mailSubject || nextReport.title)
       : projectPreference
         ? activeAudience === "internal"
           ? buildWeeklyMailSubjectFromTemplate(projectPreference.mailSubjectTemplate, project, nextReportDate) || buildWeeklyMailSubject(project, nextReportDate)
-          : buildWeeklyCustomerMailSubject(project, nextReportDate)
+          : buildWeeklyMailSubjectFromTemplate(projectPreference.customerMailSubjectTemplate, project, nextReportDate) || buildWeeklyCustomerMailSubject(project, nextReportDate)
         : buildWeeklyMailSubjectFromTemplate(latestSubjectTemplate, project, nextReportDate) || buildDefaultWeeklySubject(activeAudience, project, nextReportDate);
     const shouldUseLatestPreferenceContent = Boolean(activeAudience === "internal" && projectPreference && (!nextReport?.updatedAt || projectPreference.updatedAt.localeCompare(nextReport.updatedAt) >= 0));
     setProjectOwner(owner);
@@ -3241,6 +3399,7 @@ export function WeeklyPage({
       projectStatus: configDraft.projectStatus,
       customerRecipientsTo: configDraft.recipientsTo,
       customerRecipientsCc: configDraft.recipientsCc,
+      customerMailSubjectTemplate: weeklyMailSubjectToTemplate(normalizedMailSubject, reportDate),
     });
     setContent(
       (activeAudience === "customer" ? buildCustomerWeeklyReportContent : buildWeeklyReportContent)(state, project, {
@@ -3320,6 +3479,7 @@ export function WeeklyPage({
         cc: recipientsCc,
         subject: draftSubject,
         content: reportInput.content,
+        displayTitle: draftSubject,
       });
       onSave(buildReportInput({ mailDraftStatus: "mailbox-draft", mailDraftMessage: message, mailDraftedAt: new Date().toISOString() }));
     } catch (error) {
@@ -3381,7 +3541,7 @@ export function WeeklyPage({
               <strong>{activeAudience === "customer" ? customerCompletedWorkCount : allLeafSubtasks.length}</strong>
             </div>
             <div className="weekly-metric-card risk">
-              <span>{activeAudience === "customer" ? "外部风险" : "风险问题"}</span>
+              <span>{activeAudience === "customer" ? "外部风险/问题" : "风险问题"}</span>
               <strong>{visibleRiskCount}</strong>
             </div>
             <div className="weekly-metric-card">
@@ -3439,7 +3599,7 @@ export function WeeklyPage({
             <span>{projectStatus}</span>
           </div>
         </div>
-        <WeeklyDraftComposer content={content} audience={activeAudience} onChange={setContent} />
+        <WeeklyDraftComposer content={content} audience={activeAudience} displayTitle={mailSubject || buildDefaultWeeklySubject(activeAudience, project, reportDate)} onChange={setContent} />
         <div className="weekly-draft-actions">
           <Button tone="ghost" onClick={regenerateContent}>
             <ClipboardList aria-hidden="true" />
@@ -3681,7 +3841,11 @@ export function WeeklyHistoryPage({ state, onPage, onDeleteReport }: { state: Ap
             </div>
 
             <div className="weekly-history-preview">
-              <WeeklyDraftPreview content={previewContent} audience={selectedReport.audience === "customer" ? "customer" : "internal"} />
+              <WeeklyDraftPreview
+                content={previewContent}
+                audience={selectedReport.audience === "customer" ? "customer" : "internal"}
+                displayTitle={selectedReport.mailSubject || selectedReport.title}
+              />
             </div>
           </>
         ) : (

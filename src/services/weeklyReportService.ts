@@ -172,13 +172,13 @@ function riskStatusText(status: ReturnType<typeof projectRisks>[number]["status"
   return "关闭";
 }
 
-export function isCustomerVisibleRisk(item: ReturnType<typeof projectRisks>[number]) {
-  return item.kind === "risk" && item.riskVisibility === "external" && item.status !== "closed";
+export function isCustomerVisibleRiskIssue(item: ReturnType<typeof projectRisks>[number]) {
+  return item.riskVisibility === "external" && item.status !== "closed";
 }
 
 function riskRow(item: ReturnType<typeof projectRisks>[number]) {
   const kind = item.kind === "risk" ? "风险" : "问题";
-  const visibility = item.riskVisibility === "external" ? "外部风险" : "内部风险";
+  const visibility = item.riskVisibility === "external" ? "外部" : "内部";
   const strike = (value: string) => (item.status === "closed" ? `~~${value}~~` : value);
   return [
     strike(kind),
@@ -542,10 +542,10 @@ function customerAttentionRows(state: AppState, project: Project, nextWeek: Date
     .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"))
     .slice(0, 4);
   const riskRows = projectRisks(state, project.id)
-    .filter(isCustomerVisibleRisk)
+    .filter(isCustomerVisibleRiskIssue)
     .slice(0, 3)
     .map((item) => [
-      item.title,
+      `${item.kind === "risk" ? "风险" : "问题"}：${item.title}`,
       item.responsePlan || "请客户侧协助确认相关条件",
       item.severity === "高" ? "可能影响关键节点，需优先处理" : "需持续关注，避免影响后续推进",
     ]);
@@ -560,7 +560,7 @@ function customerAttentionRows(state: AppState, project: Project, nextWeek: Date
 function customerPlanRows(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
   const leafSubtasks = getLeafSubtasks(state, project.id);
   const explicitTasks = unfinishedTasks(tasksByIds(leafSubtasks, options.nextWeekTaskIds));
-  const plannedTasks = explicitTasks.slice(0, 8);
+  const plannedTasks = explicitTasks;
   if (plannedTasks.length) {
     return plannedTasks.map((task) => [
       task.title,
@@ -573,7 +573,7 @@ function customerPlanRows(state: AppState, project: Project, options: WeeklyRepo
 
 function customerWorkRows(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
   const leafSubtasks = getLeafSubtasks(state, project.id);
-  const selectedTasks = tasksByIds(leafSubtasks, options.thisWeekTaskIds).slice(0, 10);
+  const selectedTasks = tasksByIds(leafSubtasks, options.thisWeekTaskIds);
   return selectedTasks.map((task) => {
     const note =
       task.status === "done"

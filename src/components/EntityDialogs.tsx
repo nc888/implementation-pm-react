@@ -829,7 +829,7 @@ export function RiskIssueDialog({
               <select name="riskVisibility" defaultValue={defaults.riskVisibility}>
                 {riskVisibilities.map((visibility) => (
                   <option key={visibility} value={visibility}>
-                    {visibility === "external" ? "外部风险" : "内部风险"}
+                    {visibility === "external" ? "外部" : "内部"}
                   </option>
                 ))}
               </select>

@@ -319,6 +319,7 @@ function migrateWeeklyReportPreference(preference: Partial<WeeklyReportPreferenc
     customerRecipientsTo: preference.customerRecipientsTo || "",
     customerRecipientsCc: preference.customerRecipientsCc || "",
     mailSubjectTemplate: normalizeWeeklyMailSubjectTemplate(preference.mailSubjectTemplate, project),
+    customerMailSubjectTemplate: normalizeWeeklyMailSubjectTemplate(preference.customerMailSubjectTemplate, project),
     updatedAt: preference.updatedAt || new Date().toISOString(),
   };
 }
@@ -374,6 +375,7 @@ function deriveWeeklyReportPreferences(reports: WeeklyReport[]): WeeklyReportPre
       customerRecipientsTo: customer?.recipientsTo || "",
       customerRecipientsCc: customer?.recipientsCc || "",
       mailSubjectTemplate: internal ? weeklyMailSubjectToTemplate(internal.mailSubject, internal.reportDate) : "",
+      customerMailSubjectTemplate: customer ? weeklyMailSubjectToTemplate(customer.mailSubject, customer.reportDate) : "",
       updatedAt: latest.updatedAt,
     }),
   );
@@ -697,6 +699,7 @@ function createBaseRepository(storageLabel: string, persistence: Pick<ProjectRep
               customerRecipientsTo: weeklyReport.recipientsTo,
               customerRecipientsCc: weeklyReport.recipientsCc,
               mailSubjectTemplate: existingPreference?.mailSubjectTemplate || "",
+              customerMailSubjectTemplate: weeklyMailSubjectToTemplate(weeklyReport.mailSubject, weeklyReport.reportDate),
             }
           : {
               recipientsTo: weeklyReport.recipientsTo,
@@ -704,6 +707,7 @@ function createBaseRepository(storageLabel: string, persistence: Pick<ProjectRep
               customerRecipientsTo: existingPreference?.customerRecipientsTo || "",
               customerRecipientsCc: existingPreference?.customerRecipientsCc || "",
               mailSubjectTemplate: weeklyMailSubjectToTemplate(weeklyReport.mailSubject, weeklyReport.reportDate),
+              customerMailSubjectTemplate: existingPreference?.customerMailSubjectTemplate || "",
             };
       applyWeeklyReportPreference(
         next,

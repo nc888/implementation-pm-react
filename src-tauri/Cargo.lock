@@ -1804,7 +1804,7 @@ dependencies = [
 
 [[package]]
 name = "implementation-pm"
-version = "0.1.15"
+version = "0.1.19"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1815,6 +1815,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-sql",
+ "windows",
 ]
 
 [[package]]

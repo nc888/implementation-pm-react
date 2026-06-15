@@ -70,7 +70,7 @@ export const riskIssueMatchesSearch = (state: AppState, item: RiskIssue) => {
   const query = searchQuery(state);
   return includesQuery(query, [
     item.kind === "risk" ? "风险" : "问题",
-    item.riskVisibility === "external" ? "外部风险" : "内部风险",
+    item.riskVisibility === "external" ? "外部" : "内部",
     item.title,
     item.severity,
     item.status,
@@ -162,7 +162,7 @@ export const riskStatusLabel = (status: RiskIssue["status"]) => {
   return "关闭";
 };
 
-export const riskVisibilityLabel = (visibility: RiskIssue["riskVisibility"]) => (visibility === "external" ? "外部风险" : "内部风险");
+export const riskVisibilityLabel = (visibility: RiskIssue["riskVisibility"]) => (visibility === "external" ? "外部" : "内部");
 
 export const compareWorkItems = (a: Task, b: Task) => {
   const priorityWeight = { 高: 0, 中: 1, 低: 2 } as const;
