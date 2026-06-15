@@ -4,6 +4,7 @@ import {
   calcProjectPersonDays,
   calcStageProgress,
   compareTasksByPlan,
+  isExecutableTask,
   projectDeliverables,
   projectRisks,
   projectScope,
@@ -86,15 +87,32 @@ export function getLeafSubtasks(state: AppState, projectId: string) {
   return tasks.filter((task) => task.parentId && !parentIds.has(task.id)).sort(compareTasksByPlan);
 }
 
+export function getWeeklyReportTasks(state: AppState, projectId: string) {
+  const leafSubtasks = getLeafSubtasks(state, projectId);
+  if (leafSubtasks.length) return leafSubtasks;
+  return projectTasks(state, projectId).filter(isExecutableTask).sort(compareTasksByPlan);
+}
+
+export function getWeeklyTaskCompletionStats(state: AppState, projectId: string) {
+  const reportTasks = getWeeklyReportTasks(state, projectId);
+  const done = reportTasks.filter((task) => task.status === "done").length;
+  const open = reportTasks.filter((task) => task.status !== "done").length;
+  return {
+    done,
+    open,
+    total: done + open,
+  };
+}
+
 export function defaultThisWeekUpdatedTaskIds(state: AppState, projectId: string, week = weekRangeFor()) {
-  return getLeafSubtasks(state, projectId)
+  return getWeeklyReportTasks(state, projectId)
     .filter((task) => isInRange((task.updatedAt || "").slice(0, 10), week))
     .filter((task) => task.progress > 0 || task.status !== "todo")
     .map((task) => task.id);
 }
 
 export function defaultNextWeekTaskIds(state: AppState, projectId: string, nextWeek = nextWeekRangeFor()) {
-  return getLeafSubtasks(state, projectId)
+  return getWeeklyReportTasks(state, projectId)
     .filter((task) => task.status !== "done")
     .filter((task) => isInRange(task.startDate, nextWeek) || isInRange(task.dueDate, nextWeek))
     .map((task) => task.id);
@@ -417,9 +435,11 @@ export function sanitizeWeeklyReportContent(content: string) {
 export function ensureWeeklyReportContentSchema(state: AppState, project: Project, options: WeeklyReportBuildOptions, content: string) {
   let nextContent = sanitizeWeeklyReportContent(content);
   if (!nextContent) return buildWeeklyReportContent(state, project, options);
-  const leafSubtasks = getLeafSubtasks(state, project.id);
-  const selectedNextWeek = unfinishedTasks(tasksByIds(leafSubtasks, options.nextWeekTaskIds));
+  const reportTasks = getWeeklyReportTasks(state, project.id);
+  const selectedThisWeek = tasksByIds(reportTasks, options.thisWeekTaskIds);
+  const selectedNextWeek = unfinishedTasks(tasksByIds(reportTasks, options.nextWeekTaskIds));
   const metrics = calcProjectMetrics(state, project);
+  const taskStats = getWeeklyTaskCompletionStats(state, project.id);
 
   const personDays = calcProjectPersonDays(state, project);
   if (/^##\s+三、人天、进度与状态总览/m.test(nextContent)) {
@@ -439,10 +459,18 @@ export function ensureWeeklyReportContentSchema(state: AppState, project: Projec
     .replace(/^##\s+(?:五|六|七|八|九)、风险 \/ 问题项跟踪/gm, "## 五、风险 / 问题项跟踪")
     .replace(/^##\s+(?:六|七|八|九)、(?:本周更新了进度的子任务|本周工作内容)/gm, "## 六、本周工作内容")
     .replace(/^##\s+(?:七|八|九)、下周工作项/gm, "## 七、下周工作项");
+  nextContent = replaceTopLevelSectionByKeyword(nextContent, "本周工作内容", weeklyThisWeekTaskSection(state, selectedThisWeek));
   nextContent = replaceTopLevelSectionByKeyword(nextContent, "下周工作项", weeklyNextWeekTaskSection(state, selectedNextWeek));
 
   return nextContent
-    .replace(/任务完成情况：已完成\s+\d+\/\d+\s+项，开放\s+\d+\s+项。/g, `任务完成情况：已完成 ${metrics.done}/${projectTasks(state, project.id).length} 项，${metrics.pendingDeliverables} 个交付物未更新状态。`)
+    .replace(
+      /任务完成情况：已完成\s+\d+\/\d+\s+项，(?:未完成\s+\d+\s+项，)?(?:开放\s+\d+\s+项。|[^。]*?个交付物未更新状态。)/g,
+      `任务完成情况：已完成 ${taskStats.done}/${taskStats.total} 项，未完成 ${taskStats.open} 项，${metrics.pendingDeliverables} 个交付物未更新状态。`,
+    )
+    .replace(
+      /本周已纳入\s+\d+\s+个进度更新子任务，下周计划推进\s+\d+\s+个子任务/g,
+      `本周已纳入 ${selectedThisWeek.length} 个进度更新子任务，下周计划推进 ${selectedNextWeek.length} 个子任务`,
+    )
     .replace(/下周计划推进\s+\d+\s+个子任务/g, `下周计划推进 ${selectedNextWeek.length} 个子任务`)
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -528,7 +556,7 @@ function customerScopeRows(scopeItems: ReturnType<typeof projectScope>) {
 
 function customerAttentionRows(state: AppState, project: Project, nextWeek: DateRange) {
   const taskMap = new Map(projectTasks(state, project.id).map((task) => [task.id, task]));
-  const customerBlockedTasks = getLeafSubtasks(state, project.id)
+  const customerBlockedTasks = getWeeklyReportTasks(state, project.id)
     .filter((task) => task.status === "customer" || task.status === "blocked")
     .sort(compareTasksByPlan)
     .slice(0, 4)
@@ -558,8 +586,8 @@ function customerAttentionRows(state: AppState, project: Project, nextWeek: Date
 }
 
 function customerPlanRows(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
-  const leafSubtasks = getLeafSubtasks(state, project.id);
-  const explicitTasks = unfinishedTasks(tasksByIds(leafSubtasks, options.nextWeekTaskIds));
+  const reportTasks = getWeeklyReportTasks(state, project.id);
+  const explicitTasks = unfinishedTasks(tasksByIds(reportTasks, options.nextWeekTaskIds));
   const plannedTasks = explicitTasks;
   if (plannedTasks.length) {
     return plannedTasks.map((task) => [
@@ -572,8 +600,8 @@ function customerPlanRows(state: AppState, project: Project, options: WeeklyRepo
 }
 
 function customerWorkRows(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
-  const leafSubtasks = getLeafSubtasks(state, project.id);
-  const selectedTasks = tasksByIds(leafSubtasks, options.thisWeekTaskIds);
+  const reportTasks = getWeeklyReportTasks(state, project.id);
+  const selectedTasks = tasksByIds(reportTasks, options.thisWeekTaskIds);
   return selectedTasks.map((task) => {
     const note =
       task.status === "done"
@@ -634,10 +662,11 @@ ${customerNextPlanSection(state, project, options)}`;
 }
 
 export function buildWeeklyReportContent(state: AppState, project: Project, options: WeeklyReportBuildOptions) {
-  const leafSubtasks = getLeafSubtasks(state, project.id);
-  const selectedThisWeek = tasksByIds(leafSubtasks, options.thisWeekTaskIds);
-  const selectedNextWeek = unfinishedTasks(tasksByIds(leafSubtasks, options.nextWeekTaskIds));
+  const reportTasks = getWeeklyReportTasks(state, project.id);
+  const selectedThisWeek = tasksByIds(reportTasks, options.thisWeekTaskIds);
+  const selectedNextWeek = unfinishedTasks(tasksByIds(reportTasks, options.nextWeekTaskIds));
   const metrics = calcProjectMetrics(state, project);
+  const taskStats = getWeeklyTaskCompletionStats(state, project.id);
   const personDays = calcProjectPersonDays(state, project);
   const stageStats = calcStageProgress(state, project).filter((stage) => stage.total > 0);
   const currentStage = stageStats.length
@@ -647,7 +676,7 @@ export function buildWeeklyReportContent(state: AppState, project: Project, opti
   const allRisks = projectRisks(state, project.id);
   const statusSummary = [
     `本周项目状态为 **${options.projectStatus}**，整体进度 **${metrics.completionRate}%**。`,
-    `任务完成情况：已完成 ${metrics.done}/${projectTasks(state, project.id).length} 项，${metrics.pendingDeliverables} 个交付物未更新状态。`,
+    `任务完成情况：已完成 ${taskStats.done}/${taskStats.total} 项，未完成 ${taskStats.open} 项，${metrics.pendingDeliverables} 个交付物未更新状态。`,
     `当前阶段为 **${project.phase || currentStage?.label || "未维护"}**，当前里程碑为 **${project.nextMilestone || "未维护"}**。`,
     `本周已纳入 ${selectedThisWeek.length} 个进度更新子任务，下周计划推进 ${selectedNextWeek.length} 个子任务。`,
   ].join(" ");

@@ -366,7 +366,7 @@ function ProjectOverviewPageLegacy({ state, onPage }: { state: AppState; onPage:
   return (
     <>
       <section className="grid metrics">
-        <Metric title="自动项目进度" value={`${metrics.completionRate}%`} delta={`${metrics.done}/${tasks.length} 完成`} tone={metrics.completionRate >= 70 ? "success" : "primary"} />
+        <Metric title="自动项目进度" value={`${metrics.completionRate}%`} delta={`${metrics.done}/${metrics.done + metrics.open} 完成`} tone={metrics.completionRate >= 70 ? "success" : "primary"} />
         <Metric title="开放任务" value={metrics.open} delta={`${metrics.overdue} 个逾期`} tone={metrics.overdue ? "danger" : "success"} />
         <Metric title="本周高优待办" value={highPriorityWeekTasks.length} delta={`${weekFocusTasks.length} 个本周焦点`} tone={highPriorityWeekTasks.length ? "danger" : "success"} />
         <Metric title="风险问题" value={openRisks.length} delta={`${highRisks.length} 个高优`} tone={highRisks.length ? "danger" : "warning"} />
@@ -1224,7 +1224,7 @@ export function ProjectOverviewPage({
         <div>
           <span>自动进度</span>
           <strong className="stat-value">{metrics.completionRate}%</strong>
-          <small>{metrics.done}/{tasks.length} 完成</small>
+          <small>{metrics.done}/{metrics.done + metrics.open} 完成</small>
         </div>
         <div>
           <span>开放任务</span>
@@ -2592,7 +2592,7 @@ function extractWeeklyVisualStats(content: string) {
   const progressMatch = content.match(/整体进度\s+\*\*(\d+(?:\.\d+)?)%\*\*/);
   const fallbackProgressMatch = content.match(/整体进度\s*(\d+(?:\.\d+)?)%/);
   const statusMatch = content.match(/项目状态为\s+\*\*([^*]+)\*\*/);
-  const taskCompletionMatch = content.match(/任务完成情况：已完成\s+(\d+)\/(\d+)\s+项，\s*(?:(\d+)\s*个交付物未更新状态|开放\s+(\d+)\s+项)/);
+  const taskCompletionMatch = content.match(/任务完成情况：已完成\s+(\d+)\/(\d+)\s+项，\s*(?:未完成\s+(\d+)\s+项，\s*)?(?:(\d+)\s*个交付物未更新状态|开放\s+(\d+)\s+项)/);
   const thisWeekMatch = content.match(/本周已纳入\s+(\d+)\s+个/);
   const nextWeekMatch = content.match(/下周计划推进\s+(\d+)\s+个/);
   const progress = Number(progressMatch?.[1] || fallbackProgressMatch?.[1] || 0);
@@ -2604,8 +2604,8 @@ function extractWeeklyVisualStats(content: string) {
     status: statusMatch?.[1] || "未维护",
     doneCount,
     totalCount,
-    openCount: Number(taskCompletionMatch?.[4] || Math.max(0, totalCount - doneCount)),
-    pendingDeliverableCount: Number(taskCompletionMatch?.[3] || 0),
+    openCount: Number(taskCompletionMatch?.[3] || taskCompletionMatch?.[5] || Math.max(0, totalCount - doneCount)),
+    pendingDeliverableCount: Number(taskCompletionMatch?.[4] || 0),
     thisWeekCount: Number(thisWeekMatch?.[1] || 0),
     nextWeekCount: Number(nextWeekMatch?.[1] || 0),
     ...riskStats,
@@ -2627,7 +2627,7 @@ function WeeklyVisualSummary({ content }: { content: string }) {
           <strong>{stats.progress}%</strong>
           <span>整体进度</span>
         </div>
-        <small className="weekly-progress-summary">已完成 {stats.doneCount}/{stats.totalCount} 项，{stats.pendingDeliverableCount} 个交付物未更新状态</small>
+        <small className="weekly-progress-summary">已完成 {stats.doneCount}/{stats.totalCount} 项，未完成 {stats.openCount} 项，{stats.pendingDeliverableCount} 个交付物未更新状态</small>
       </div>
       <div className="weekly-visual-card status">
         <span>项目状态</span>
@@ -3253,35 +3253,39 @@ export function WeeklyPage({
         ? "选择要写入客户周报“下周计划”的未完成子任务"
         : `默认识别 ${formatDateRange(nextWeek)} 内计划实施的未完成子任务`;
   const activeTaskSourceCount = activeTaskSource === "thisWeek" ? selectedThisWeekTasks.length : selectedNextWeekTasks.length;
-  const rebuildCustomerContentForTaskIds = (nextThisWeekTaskIds: string[], nextNextWeekTaskIds: string[]) => {
-    if (activeAudience !== "customer") return;
-    setContent(
-      buildCustomerWeeklyReportContent(state, project, {
-        reportDate,
-        projectOwner,
-        implementationPersonnel,
-        implementationMode,
-        projectStatus,
-        thisWeekTaskIds: nextThisWeekTaskIds,
-        nextWeekTaskIds: nextNextWeekTaskIds,
-      }),
+  const rebuildContentForTaskIds = (nextThisWeekTaskIds: string[], nextNextWeekTaskIds: string[]) => {
+    const buildOptions = {
+      reportDate,
+      projectOwner,
+      implementationPersonnel,
+      implementationMode,
+      projectStatus,
+      thisWeekTaskIds: nextThisWeekTaskIds,
+      nextWeekTaskIds: nextNextWeekTaskIds,
+    };
+    if (activeAudience === "customer") {
+      setContent(buildCustomerWeeklyReportContent(state, project, buildOptions));
+      return;
+    }
+    setContent((currentContent) =>
+      ensureWeeklyReportContentSchema(state, project, buildOptions, currentContent || buildWeeklyReportContent(state, project, buildOptions)),
     );
   };
   const updateThisWeekTaskIds = (taskIds: string[]) => {
     setThisWeekTaskIds(taskIds);
-    rebuildCustomerContentForTaskIds(taskIds, effectiveNextWeekTaskIds);
+    rebuildContentForTaskIds(taskIds, effectiveNextWeekTaskIds);
   };
   const updateNextWeekTaskIds = (taskIds: string[]) => {
     const filteredTaskIds = taskIds.filter((taskId) => unfinishedLeafSubtaskIds.has(taskId));
     setNextWeekTaskIds(filteredTaskIds);
-    rebuildCustomerContentForTaskIds(thisWeekTaskIds, filteredTaskIds);
+    rebuildContentForTaskIds(thisWeekTaskIds, filteredTaskIds);
   };
   const resetTaskSources = () => {
     const defaultThisWeek = defaultThisWeekUpdatedTaskIds(state, project.id, week);
     const defaultNextWeek = defaultNextWeekTaskIds(state, project.id, nextWeek);
     setThisWeekTaskIds(defaultThisWeek);
     setNextWeekTaskIds(defaultNextWeek);
-    rebuildCustomerContentForTaskIds(defaultThisWeek, defaultNextWeek);
+    rebuildContentForTaskIds(defaultThisWeek, defaultNextWeek);
   };
   const openTaskSource = (source: "thisWeek" | "nextWeek") => {
     setActiveTaskSource(source);
