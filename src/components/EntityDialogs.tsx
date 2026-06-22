@@ -1,7 +1,8 @@
 import { useState } from "react";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import type { AppState, Deliverable, Project, ProjectMilestone, RiskIssue, ScopeItem, Task, TaskStage, TaskStatus } from "../types";
 import { formatProjectMilestoneOption, getProject, normalizeProjectMilestones, projectMilestonesForState, projectTasks, stageDefinitionsForState, taskStatusLabels } from "../services/contextBuilder";
-import { Button } from "./ui";
+import { Button, DateField } from "./ui";
 
 const taskStatuses: TaskStatus[] = ["todo", "doing", "customer", "blocked", "done"];
 const priorities: Task["priority"][] = ["高", "中", "低"];
@@ -139,7 +140,7 @@ function milestoneDraftOptions(milestones: ProjectMilestone[], currentValue: str
 function newMilestoneDraft(index: number): ProjectMilestone {
   return {
     id: `milestone-${crypto.randomUUID()}`,
-    title: `M${index + 1} 里程碑`,
+    title: "里程碑",
     dueDate: "",
     status: "未开始",
     description: "",
@@ -197,6 +198,17 @@ export function ProjectDialog({
       setNextMilestone("");
     }
     setMilestoneDrafts((current) => current.filter((milestone) => milestone.id !== milestoneId));
+  };
+
+  const moveMilestone = (milestoneId: string, direction: -1 | 1) => {
+    setMilestoneDrafts((current) => {
+      const index = current.findIndex((milestone) => milestone.id === milestoneId);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
   };
 
   return (
@@ -288,14 +300,12 @@ export function ProjectDialog({
               预估开发人天
               <input name="estimatedDevelopmentPersonDays" type="number" min="0" step="0.5" defaultValue={defaults.estimatedDevelopmentPersonDays} />
             </label>
-            <label>
-              开始日期
-              <input name="startDate" type="date" defaultValue={defaults.startDate || today()} />
-            </label>
-            <label>
-              结束日期
-              <input name="endDate" type="date" defaultValue={defaults.endDate || today()} />
-            </label>
+            <div className="form-field">
+              <DateField name="startDate" label="开始日期" defaultValue={defaults.startDate || today()} ariaLabel="项目开始日期" required />
+            </div>
+            <div className="form-field">
+              <DateField name="endDate" label="结束日期" defaultValue={defaults.endDate || today()} ariaLabel="项目结束日期" required />
+            </div>
             <label className="wide">
               项目说明
               <textarea name="description" defaultValue={defaults.description} />
@@ -313,9 +323,25 @@ export function ProjectDialog({
               <div className="project-milestone-list">
                 {milestoneDrafts.map((milestone, index) => (
                   <div className="project-milestone-row" key={milestone.id}>
-                    <span className="project-milestone-index">{index + 1}</span>
-                    <input value={milestone.title} onChange={(event) => patchMilestone(milestone.id, { title: event.target.value })} aria-label={`里程碑 ${index + 1} 名称`} />
-                    <input type="date" value={milestone.dueDate} onChange={(event) => patchMilestone(milestone.id, { dueDate: event.target.value })} aria-label={`里程碑 ${index + 1} 日期`} />
+                    <span className="project-milestone-index">M{index + 1}</span>
+                    <input value={milestone.title} onChange={(event) => patchMilestone(milestone.id, { title: event.target.value })} aria-label={`M${index + 1} 里程碑名称`} />
+                    <DateField
+                      value={milestone.dueDate}
+                      onChange={(value) => patchMilestone(milestone.id, { dueDate: value })}
+                      hideLabel
+                      ariaLabel={`M${index + 1} 里程碑日期`}
+                      compact
+                      showStepButtons={false}
+                      className="milestone-date-field"
+                    />
+                    <div className="project-milestone-order-actions" aria-label={`调整 M${index + 1} 顺序`}>
+                      <button type="button" onClick={() => moveMilestone(milestone.id, -1)} disabled={index === 0} aria-label={`上移 M${index + 1}`}>
+                        <ArrowUp aria-hidden="true" />
+                      </button>
+                      <button type="button" onClick={() => moveMilestone(milestone.id, 1)} disabled={index === milestoneDrafts.length - 1} aria-label={`下移 M${index + 1}`}>
+                        <ArrowDown aria-hidden="true" />
+                      </button>
+                    </div>
                     <button type="button" className="button danger" onClick={() => removeMilestone(milestone.id)} aria-label={`删除里程碑 ${index + 1}`}>
                       删除
                     </button>
@@ -479,14 +505,12 @@ export function TaskDialog({
               负责人
               <input name="owner" defaultValue={defaults.owner} />
             </label>
-            <label>
-              开始日期
-              <input name="startDate" type="date" defaultValue={defaults.startDate || defaults.dueDate || today()} />
-            </label>
-            <label>
-              截止日期
-              <input name="dueDate" type="date" defaultValue={defaults.dueDate || today()} />
-            </label>
+            <div className="form-field">
+              <DateField name="startDate" label="开始日期" defaultValue={defaults.startDate || defaults.dueDate || today()} ariaLabel="任务开始日期" required />
+            </div>
+            <div className="form-field">
+              <DateField name="dueDate" label="截止日期" defaultValue={defaults.dueDate || today()} ariaLabel="任务截止日期" required />
+            </div>
             <label>
               维度
               <input name="dimension" defaultValue={defaults.dimension} />
@@ -730,10 +754,9 @@ export function DeliverableDialog({
                 ))}
               </select>
             </label>
-            <label>
-              截止日期
-              <input name="dueDate" type="date" defaultValue={defaults.dueDate || today()} />
-            </label>
+            <div className="form-field">
+              <DateField name="dueDate" label="截止日期" defaultValue={defaults.dueDate || today()} ariaLabel="交付物截止日期" required />
+            </div>
           </div>
           <footer className="modal-actions">
             <Button tone="ghost" onClick={onClose}>

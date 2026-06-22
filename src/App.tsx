@@ -3,14 +3,15 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { AppShell } from "./components/AppShell";
 import { ConfirmDialog, DeliverableDialog, ProjectDialog, RiskIssueDialog, ScopeItemDialog, TaskDialog } from "./components/EntityDialogs";
 import { createRepository } from "./services/repositoryFactory";
-import { migrateAppState, type ProjectRepository } from "./services/repository";
-import { exportSingleProjectBackupJson, importProjectsFromBackup, type ProjectBackupScope } from "./services/projectImport";
+import { migrateAppState, type ProjectRepository, type TaskBulkPatch } from "./services/repository";
+import { exportSingleProjectBackupJson, importProjectsFromBackup, previewProjectsFromBackup, type ProjectBackupScope, type ProjectImportPreview } from "./services/projectImport";
 import {
   buildProjectSnapshot,
   createProjectStageConfig,
   getProject,
   normalizeProjectPhase,
   normalizeProjectMilestones,
+  normalizeProjectMilestoneText,
   normalizeStageDefinitions,
   normalizeTaskStage,
   projectTasks,
@@ -115,6 +116,30 @@ function backupTimestamp(date = new Date()) {
 
 function buildAssistantSnapshot(state: AppState, project: Project, scope: AssistantScope) {
   return buildAssistantDataSnapshot(state, project, scope);
+}
+
+function importPreviewDescription(file: File, preview: ProjectImportPreview) {
+  const names = preview.plannedProjectNames.slice(0, 5).join(", ");
+  const moreNames = preview.plannedProjectNames.length > 5 ? `, +${preview.plannedProjectNames.length - 5} more` : "";
+  const duplicateLine = preview.duplicateNames.length
+    ? `Renamed duplicates: ${preview.duplicateNames.map((item) => `${item.sourceName} -> ${item.importName}`).join("; ")}`
+    : "Renamed duplicates: none";
+  const warningLines = preview.warnings.map((warning) => `- ${warning}`).join("\n");
+  return [
+    `File: ${file.name}`,
+    `Schema: ${preview.schemaVersion} / scope: ${preview.exportScope}${preview.exportedAt ? ` / exported: ${preview.exportedAt}` : ""}`,
+    `Projects: ${preview.projectCount} (${names}${moreNames})`,
+    `Records: ${preview.taskCount} tasks, ${preview.deliverableCount} deliverables, ${preview.riskIssueCount} risks/issues, ${preview.weeklyReportCount} weekly reports`,
+    `Other: ${preview.scopeItemCount} scope items, ${preview.workflowCount} workflows, ${preview.aiMessageCount} AI messages`,
+    duplicateLine,
+    "",
+    "Safety checks:",
+    warningLines,
+  ].join("\n");
+}
+
+function importResultMessage(result: ReturnType<typeof importProjectsFromBackup>) {
+  return `Imported ${result.projectCount} project(s): ${result.projectNames.join(", ")}. Added ${result.taskCount} tasks, ${result.deliverableCount} deliverables, ${result.riskIssueCount} risks/issues.`;
 }
 
 export function App() {
@@ -363,21 +388,30 @@ export function App() {
     notify(isProjectExport ? `当前项目备份已导出：${project.name}` : "平台全部数据备份已导出。", "primary");
   };
 
-  const importData = async (file: File) => {
+  const importDataWithPreview = async (file: File) => {
     try {
       const raw = await file.text();
       if (!raw.trim()) {
-        notify("导入失败：JSON 文件内容为空。", "warning");
+        notify("Import failed: the JSON file is empty.", "warning");
         return;
       }
       const payload = JSON.parse(raw) as unknown;
-      const result = importProjectsFromBackup(state, payload);
-      setState(result.state);
-      const details = [`${result.taskCount} 个任务`, `${result.deliverableCount} 个交付物`, `${result.riskIssueCount} 个风险/问题`].join("、");
-      notify(`已导入 ${result.projectCount} 个项目：${result.projectNames.join("、")}。同步导入 ${details}。`, "success");
+      const preview = previewProjectsFromBackup(state, payload);
+      notify(`Import file checked: ${preview.projectCount} project(s) ready for review.`, "primary");
+      requestConfirm({
+        title: "Review JSON import",
+        description: importPreviewDescription(file, preview),
+        confirmText: "Import JSON",
+        tone: "primary",
+        onConfirm: () => {
+          const result = importProjectsFromBackup(state, payload);
+          setState(result.state);
+          notify(importResultMessage(result), "success");
+        },
+      });
     } catch (error) {
-      const message = error instanceof SyntaxError ? "JSON 格式无效，请选择平台导出的备份文件。" : error instanceof Error ? error.message : "无法读取导入文件。";
-      notify(`导入失败：${message}`, "danger");
+      const message = error instanceof SyntaxError ? "Invalid JSON. Select a backup exported by this app." : error instanceof Error ? error.message : "Unable to read the import file.";
+      notify(`Import failed: ${message}`, "danger");
     }
   };
 
@@ -386,6 +420,20 @@ export function App() {
   const updateTaskStatus = (taskId: string, status: TaskStatus) => {
     setState((current) => (current ? repository.updateTaskStatus(current, taskId, status) : current));
     notify("事项状态已更新。", "primary");
+  };
+
+  const updateTaskStatuses = (taskIds: string[], status: TaskStatus) => {
+    const uniqueTaskIds = Array.from(new Set(taskIds));
+    if (!uniqueTaskIds.length) return;
+    setState((current) => (current ? repository.patchTasks(current, uniqueTaskIds, { status }) : current));
+    notify(`已批量更新 ${uniqueTaskIds.length} 项任务状态。`, "primary");
+  };
+
+  const updateTaskBatch = (taskIds: string[], patch: TaskBulkPatch) => {
+    const uniqueTaskIds = Array.from(new Set(taskIds));
+    if (!uniqueTaskIds.length) return;
+    setState((current) => (current ? repository.patchTasks(current, uniqueTaskIds, patch) : current));
+    notify(`Updated ${uniqueTaskIds.length} task(s).`, "primary");
   };
 
   const updateTaskProgress = (taskId: string, progress: number) => {
@@ -410,9 +458,10 @@ export function App() {
     const exists = state.projects.some((item) => item.id === project.id);
     setState((current) => {
       if (!current) return current;
-      const projects = exists ? current.projects.map((item) => (item.id === project.id ? project : item)) : [...current.projects, project];
       const shouldSaveMilestones = Array.isArray(milestones);
       const normalizedMilestones = shouldSaveMilestones ? normalizeProjectMilestones(milestones) : [];
+      const normalizedProject = { ...project, nextMilestone: normalizeProjectMilestoneText(project.nextMilestone) };
+      const projects = exists ? current.projects.map((item) => (item.id === project.id ? normalizedProject : item)) : [...current.projects, normalizedProject];
       const projectStageConfigs =
         current.projectStageConfigs.some((item) => item.projectId === project.id)
           ? current.projectStageConfigs.map((config) =>
@@ -1428,7 +1477,7 @@ export function App() {
             state={state}
             onProject={setProject}
             onAddProject={() => setDialog({ kind: "project" })}
-            onImportProject={importData}
+            onImportProject={importDataWithPreview}
             onEditProject={(project) => setDialog({ kind: "project", item: project })}
             onDeleteProject={deleteProject}
             aiService={aiService}
@@ -1454,6 +1503,8 @@ export function App() {
             state={state}
             onAddTask={() => setDialog({ kind: "task" })}
             onTaskStatus={updateTaskStatus}
+            onTaskStatuses={updateTaskStatuses}
+            onTaskBatch={updateTaskBatch}
             onTaskProgress={updateTaskProgress}
             onEditTask={(task) => setDialog({ kind: "task", item: task })}
             onDeleteTask={deleteTask}
@@ -1574,7 +1625,7 @@ export function App() {
             state={state}
             onProject={setProject}
             onAddProject={() => setDialog({ kind: "project" })}
-            onImportProject={importData}
+            onImportProject={importDataWithPreview}
             onEditProject={(project) => setDialog({ kind: "project", item: project })}
             onDeleteProject={deleteProject}
             aiService={aiService}

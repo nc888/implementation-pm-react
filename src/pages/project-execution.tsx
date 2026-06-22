@@ -66,6 +66,7 @@ import {
   stageLabel,
   stageOrderForState,
 } from "../services/contextBuilder";
+import type { TaskBulkPatch } from "../services/repository";
 import {
   chooseDeliverableProjectDirectory,
   getCachedDeliverableDirectory,
@@ -100,7 +101,7 @@ import {
   weeklyImplementationModes,
   weeklyProjectStatuses,
 } from "../services/weeklyReportService";
-import { Badge, Button, Card, Metric, Progress } from "../components/ui";
+import { Badge, Button, Card, DateField, Metric, Progress } from "../components/ui";
 import {
   allExpandedIds,
   compareWorkItems,
@@ -145,6 +146,65 @@ function clampProgressInput(value: number) {
 
 function canEditLeafSubtask(node: Pick<TaskNode, "parentId" | "children">) {
   return Boolean(node.parentId && !node.children.length);
+}
+
+type TaskLedgerQuickFilter = "all" | "attention" | "overdue" | "customer" | "blocked" | "high" | "week";
+
+const taskLedgerQuickFilters: Array<{ value: TaskLedgerQuickFilter; label: string; shortcut: string }> = [
+  { value: "all", label: "全部", shortcut: "0" },
+  { value: "attention", label: "待跟进", shortcut: "F" },
+  { value: "overdue", label: "逾期", shortcut: "O" },
+  { value: "customer", label: "待客户", shortcut: "C" },
+  { value: "blocked", label: "阻塞", shortcut: "B" },
+  { value: "high", label: "高优先", shortcut: "H" },
+  { value: "week", label: "本周", shortcut: "W" },
+];
+
+function taskLedgerPreferenceKey(projectId: string) {
+  return `implementation-pm-task-ledger:${projectId}`;
+}
+
+function readTaskLedgerPreferences(projectId: string): { hideDone: boolean; quickFilter: TaskLedgerQuickFilter } {
+  if (typeof window === "undefined") return { hideDone: true, quickFilter: "attention" };
+  try {
+    const raw = window.localStorage.getItem(taskLedgerPreferenceKey(projectId));
+    const parsed = raw ? JSON.parse(raw) : null;
+    const quickFilter = taskLedgerQuickFilters.some((filter) => filter.value === parsed?.quickFilter) ? parsed.quickFilter : "attention";
+    return {
+      hideDone: typeof parsed?.hideDone === "boolean" ? parsed.hideDone : true,
+      quickFilter,
+    };
+  } catch {
+    return { hideDone: true, quickFilter: "attention" };
+  }
+}
+
+function taskMatchesLedgerFilter(node: TaskNode, quickFilter: TaskLedgerQuickFilter, today: string, week = currentWeekRange()) {
+  if (quickFilter === "all") return true;
+  if (quickFilter === "overdue") return isOverdueTask(node, today);
+  if (quickFilter === "customer") return node.computedStatus === "customer";
+  if (quickFilter === "blocked") return node.computedStatus === "blocked";
+  if (quickFilter === "high") return node.priority === "高" && node.computedStatus !== "done";
+  if (quickFilter === "week") return isThisWeekTask(node, week);
+  return node.computedStatus === "blocked" || node.computedStatus === "customer" || isOverdueTask(node, today) || (node.priority === "高" && node.computedStatus !== "done");
+}
+
+function taskLedgerNodesWithContext(nodes: TaskNode[], quickFilter: TaskLedgerQuickFilter, today: string, week = currentWeekRange()) {
+  if (quickFilter === "all") return nodes;
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const visibleIds = new Set<string>();
+  nodes.forEach((node) => {
+    if (!taskMatchesLedgerFilter(node, quickFilter, today, week)) return;
+    visibleIds.add(node.id);
+    let parentId = node.parentId;
+    while (parentId) {
+      const parent = nodesById.get(parentId);
+      if (!parent) break;
+      visibleIds.add(parent.id);
+      parentId = parent.parentId;
+    }
+  });
+  return nodes.filter((node) => visibleIds.has(node.id));
 }
 
 function InlineProgressEditor({
@@ -1404,6 +1464,8 @@ export function ListPage({
   state,
   onAddTask,
   onTaskStatus,
+  onTaskStatuses,
+  onTaskBatch,
   onTaskProgress,
   onEditTask,
   onDeleteTask,
@@ -1411,6 +1473,8 @@ export function ListPage({
   state: AppState;
   onAddTask: () => void;
   onTaskStatus: (taskId: string, status: TaskStatus) => void;
+  onTaskStatuses: (taskIds: string[], status: TaskStatus) => void;
+  onTaskBatch: (taskIds: string[], patch: TaskBulkPatch) => void;
   onTaskProgress: (taskId: string, progress: number) => void;
   onEditTask: (task: Task) => void;
   onDeleteTask: (taskId: string) => void;
@@ -1418,17 +1482,180 @@ export function ListPage({
   const project = getProject(state);
   const tasks = projectTasks(state, project.id);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [ledgerPreferences, setLedgerPreferences] = useState(() => readTaskLedgerPreferences(project.id));
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  const [bulkOwner, setBulkOwner] = useState("");
+  const [bulkStage, setBulkStage] = useState("");
+  const [bulkPriority, setBulkPriority] = useState<Task["priority"] | "">("");
+  const [bulkStartDate, setBulkStartDate] = useState("");
+  const [bulkDueDate, setBulkDueDate] = useState("");
+  const [bulkProgress, setBulkProgress] = useState("");
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  const hideDone = ledgerPreferences.hideDone;
+  const quickFilter = ledgerPreferences.quickFilter;
+  const today = localDateKey();
+  const week = currentWeekRange();
   const nodes = flattenVisibleTaskNodes(state, tasks, collapsed);
+  const filteredByQuickView = taskLedgerNodesWithContext(nodes, quickFilter, today, week);
+  const displayedNodes = hideDone ? filteredByQuickView.filter((node) => node.computedStatus !== "done") : filteredByQuickView;
+  const hiddenDoneCount = filteredByQuickView.length - displayedNodes.length;
+  const editableNodes = displayedNodes.filter((node) => canEditLeafSubtask(node));
+  const editableNodeIds = editableNodes.map((node) => node.id);
+  const editableNodeIdKey = editableNodeIds.join("|");
+  const selectedEditableNodes = editableNodes.filter((node) => selectedTaskIds.has(node.id));
+  const selectedIds = selectedEditableNodes.map((node) => node.id);
+  const selectedKey = selectedIds.join("|");
+  const selectedCount = selectedIds.length;
+  const allVisibleSelected = editableNodes.length > 0 && selectedCount === editableNodes.length;
+  const partlySelected = selectedCount > 0 && selectedCount < editableNodes.length;
+  const stageOptions = stageDefinitionsForProject(state, project.id);
+  const ownerOptions = Array.from(new Set(tasks.map((task) => task.owner.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right, "zh-CN"));
+  const hasBulkPatch = Boolean(bulkOwner.trim() || bulkStage || bulkPriority || bulkStartDate || bulkDueDate || bulkProgress.trim());
+  const quickFilterCounts = new Map<TaskLedgerQuickFilter, number>(
+    taskLedgerQuickFilters.map((filter) => [filter.value, nodes.filter((node) => taskMatchesLedgerFilter(node, filter.value, today, week)).length]),
+  );
+
+  useEffect(() => {
+    setLedgerPreferences(readTaskLedgerPreferences(project.id));
+    setSelectedTaskIds(new Set());
+    resetBulkFields();
+  }, [project.id]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(taskLedgerPreferenceKey(project.id), JSON.stringify(ledgerPreferences));
+    } catch {
+      // Preference persistence is nice-to-have; the ledger remains fully usable without it.
+    }
+  }, [ledgerPreferences, project.id]);
+
+  useEffect(() => {
+    const editableIdSet = new Set(editableNodeIds);
+    setSelectedTaskIds((current) => {
+      const next = new Set([...current].filter((taskId) => editableIdSet.has(taskId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [editableNodeIdKey]);
+
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = partlySelected;
+  }, [partlySelected]);
+
+  useEffect(() => {
+    const isTextEditingTarget = (target: EventTarget | null) =>
+      target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName));
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isTextEditingTarget(event.target)) return;
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && key === "a") {
+        event.preventDefault();
+        setSelectedTaskIds(new Set(editableNodeIds));
+        return;
+      }
+      if (key === "escape" && selectedCount) {
+        event.preventDefault();
+        setSelectedTaskIds(new Set());
+        return;
+      }
+      if (key === "n") {
+        event.preventDefault();
+        onAddTask();
+        return;
+      }
+      const matchedQuickFilter = taskLedgerQuickFilters.find((filter) => filter.shortcut.toLowerCase() === key);
+      if (matchedQuickFilter) {
+        event.preventDefault();
+        setLedgerPreferences((current) => ({ ...current, quickFilter: matchedQuickFilter.value }));
+        setSelectedTaskIds(new Set());
+        if (matchedQuickFilter.value !== "all") setCollapsed(new Set());
+        return;
+      }
+      const statusIndex = Number(event.key) - 1;
+      if (selectedCount && statusIndex >= 0 && statusIndex < statusColumns.length) {
+        event.preventDefault();
+        onTaskStatuses(selectedIds, statusColumns[statusIndex][0]);
+        setSelectedTaskIds(new Set());
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [editableNodeIdKey, onAddTask, onTaskStatuses, selectedCount, selectedKey]);
+
+  const toggleSelection = (taskId: string, checked: boolean) => {
+    setSelectedTaskIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(taskId);
+      } else {
+        next.delete(taskId);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllVisible = (checked: boolean) => {
+    setSelectedTaskIds((current) => {
+      const next = new Set(current);
+      editableNodeIds.forEach((taskId) => {
+        if (checked) {
+          next.add(taskId);
+        } else {
+          next.delete(taskId);
+        }
+      });
+      return next;
+    });
+  };
+
+  const applyBulkStatus = (status: TaskStatus) => {
+    if (!selectedCount) return;
+    onTaskStatuses(selectedIds, status);
+    setSelectedTaskIds(new Set());
+  };
+
+  const resetBulkFields = () => {
+    setBulkOwner("");
+    setBulkStage("");
+    setBulkPriority("");
+    setBulkStartDate("");
+    setBulkDueDate("");
+    setBulkProgress("");
+  };
+
+  const applyBulkFields = () => {
+    if (!selectedCount || !hasBulkPatch) return;
+    const patch: TaskBulkPatch = {};
+    const owner = bulkOwner.trim();
+    if (owner) patch.owner = owner;
+    if (bulkStage) patch.stage = bulkStage;
+    if (bulkPriority) patch.priority = bulkPriority;
+    if (bulkStartDate) patch.startDate = bulkStartDate;
+    if (bulkDueDate) patch.dueDate = bulkDueDate;
+    if (bulkProgress.trim()) {
+      const progress = Number(bulkProgress);
+      if (Number.isFinite(progress)) patch.progress = progress;
+    }
+    if (!Object.keys(patch).length) return;
+    onTaskBatch(selectedIds, patch);
+    resetBulkFields();
+  };
+
   const renderStatusCell = (node: TaskNode) => {
     if (!canEditLeafSubtask(node)) {
-      return <Badge tone={taskStatusTone(node.computedStatus)}>{taskStatusLabels[node.computedStatus]}</Badge>;
+      return (
+        <span className={`task-status-readonly ${statusCssClass(node.computedStatus)}`}>
+          <span className="status-dot" aria-hidden="true" />
+          <span>{taskStatusLabels[node.computedStatus]}</span>
+          <small>Auto</small>
+        </span>
+      );
     }
     return (
-      <label className={`task-status-control ${statusCssClass(node.status)}`} title="修改子任务状态">
-        <span className="status-dot" />
+      <label className={`task-status-control ${statusCssClass(node.status)}`} title="Change task status">
+        <span className="status-dot" aria-hidden="true" />
         <select
           value={node.status}
-          aria-label={`修改 ${node.title} 状态`}
+          aria-label={`Change ${node.title} status`}
           onChange={(event) => {
             const nextStatus = event.target.value as TaskStatus;
             if (node.status !== nextStatus) onTaskStatus(node.id, nextStatus);
@@ -1457,7 +1684,7 @@ export function ListPage({
         <Progress value={node.computedProgress} />
         <InlineProgressEditor
           value={node.computedProgress}
-          label={`修改 ${node.title} 进度百分比`}
+          label={`Change ${node.title} progress percent`}
           onCommit={(nextProgress) => onTaskProgress(node.id, nextProgress)}
         />
       </div>
@@ -1467,16 +1694,163 @@ export function ListPage({
     <Card className="pad compact-ledger-card">
       <div className="table-toolbar compact">
         <div>
-          <h3>任务执行台账</h3>
-          <p className="muted">压缩行高、合并类型和阶段，任务状态与进度保持同源。</p>
+          <h3>任务台账</h3>
+          <p className="muted">按常用视图筛选可执行子任务，主任务保持自动汇总。</p>
         </div>
         <Button tone="primary" onClick={onAddTask}>新建任务</Button>
+      </div>
+      <div className="task-ledger-commandbar" aria-live="polite">
+        <div className="task-ledger-viewbar">
+          <div className="task-ledger-filters" role="group" aria-label="任务快速视图">
+            {taskLedgerQuickFilters.map((filter) => (
+              <button
+                type="button"
+                key={filter.value}
+                className={`task-filter-chip ${quickFilter === filter.value ? "active" : ""}`}
+                onClick={() => {
+                  setLedgerPreferences((current) => ({ ...current, quickFilter: filter.value }));
+                  setSelectedTaskIds(new Set());
+                  if (filter.value !== "all") setCollapsed(new Set());
+                }}
+                aria-pressed={quickFilter === filter.value}
+              >
+                <span>{filter.label}</span>
+                <strong>{quickFilterCounts.get(filter.value) || 0}</strong>
+                <kbd>{filter.shortcut}</kbd>
+              </button>
+            ))}
+          </div>
+          <label className="task-filter-toggle">
+            <input
+              type="checkbox"
+              checked={hideDone}
+              onChange={(event) => setLedgerPreferences((current) => ({ ...current, hideDone: event.currentTarget.checked }))}
+            />
+            <span>隐藏完成</span>
+            {hiddenDoneCount ? <small>{hiddenDoneCount} 项</small> : null}
+          </label>
+          <div className={`task-selection-summary ${selectedCount ? "active" : ""}`}>
+            <strong>{selectedCount ? `已选 ${selectedCount}` : "未选择"}</strong>
+            <span>{editableNodes.length ? `当前视图 ${editableNodes.length} 个可执行` : "当前视图无可执行子任务"}</span>
+          </div>
+        </div>
+        <div className={`task-bulk-panel ${selectedCount ? "active" : ""}`}>
+          <span className="task-bulk-label">批量</span>
+          {selectedCount ? (
+            <>
+              <select
+                value=""
+                aria-label="批量修改任务状态"
+                onChange={(event) => {
+                  const status = event.currentTarget.value as TaskStatus;
+                  if (status) applyBulkStatus(status);
+                  event.currentTarget.value = "";
+                }}
+              >
+                <option value="">状态</option>
+                {statusColumns.map(([status, label], index) => (
+                  <option key={status} value={status}>
+                    {index + 1}. {label}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                list="task-bulk-owner-options"
+                value={bulkOwner}
+                placeholder="负责人"
+                aria-label="批量设置任务负责人"
+                onChange={(event) => setBulkOwner(event.currentTarget.value)}
+              />
+              <datalist id="task-bulk-owner-options">
+                {ownerOptions.map((owner) => (
+                  <option key={owner} value={owner} />
+                ))}
+              </datalist>
+              <select
+                value={bulkStage}
+                aria-label="批量设置任务阶段"
+                onChange={(event) => setBulkStage(event.currentTarget.value)}
+              >
+                <option value="">阶段</option>
+                {stageOptions.map((stage) => (
+                  <option key={stage.id} value={stage.id}>
+                    {stage.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={bulkPriority}
+                aria-label="批量设置任务优先级"
+                onChange={(event) => setBulkPriority(event.currentTarget.value as Task["priority"] | "")}
+              >
+                <option value="">优先级</option>
+                {(["高", "中", "低"] as Task["priority"][]).map((priority) => (
+                  <option key={priority} value={priority}>
+                    {priority}
+                  </option>
+                ))}
+              </select>
+              <DateField
+                value={bulkDueDate}
+                onChange={setBulkDueDate}
+                placeholder="截止日期"
+                ariaLabel="批量设置任务截止日期"
+                compact
+                hideLabel
+                showStepButtons={false}
+              />
+              <DateField
+                value={bulkStartDate}
+                onChange={setBulkStartDate}
+                placeholder="开始日期"
+                ariaLabel="批量设置任务开始日期"
+                compact
+                hideLabel
+                showStepButtons={false}
+              />
+              <input
+                type="number"
+                min="0"
+                max="100"
+                value={bulkProgress}
+                placeholder="%"
+                aria-label="批量设置任务进度百分比"
+                onChange={(event) => setBulkProgress(event.currentTarget.value)}
+              />
+              <button type="button" className="button ghost" disabled={!hasBulkPatch} onClick={applyBulkFields}>
+                应用
+              </button>
+              <button type="button" className="button ghost" onClick={() => setSelectedTaskIds(new Set())}>
+                清空
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="task-bulk-empty">选择子任务后可批量调整状态、负责人、阶段、日期和进度。</span>
+              <button type="button" className="button ghost" disabled={!editableNodes.length} onClick={() => setSelectedTaskIds(new Set(editableNodeIds))}>
+                选择当前视图
+              </button>
+            </>
+          )}
+        </div>
+        <span className="task-shortcut-hint">Ctrl/Cmd+A 选择当前视图 · 1-5 改状态 · N 新建 · Esc 清空 · F/O/C/B/H/W 切视图</span>
       </div>
       <table className="table compact-table task-ledger-table">
         <thead>
           <tr>
+            <th className="task-select-col">
+              <input
+                ref={selectAllRef}
+                type="checkbox"
+                checked={allVisibleSelected}
+                disabled={!editableNodes.length}
+                aria-label="Select visible editable tasks"
+                onChange={(event) => toggleAllVisible(event.currentTarget.checked)}
+              />
+            </th>
             <th>任务</th>
-            <th>类型 · 阶段</th>
+            <th>类型 / 阶段</th>
             <th>负责人</th>
             <th>状态</th>
             <th>进度</th>
@@ -1485,25 +1859,41 @@ export function ListPage({
           </tr>
         </thead>
         <tbody>
-          {nodes.map((node) => (
-            <tr key={node.id} className={node.depth ? "tree-row child" : "tree-row"}>
-              <td>
-                <TaskTitleCell node={node} collapsed={collapsed} onToggle={(taskId) => setCollapsed((value) => toggleCollapsed(value, taskId))} />
-              </td>
-              <td><span className="muted">{node.type} · {stageLabel(state, node.stage, project.id)}</span></td>
-              <td><span className="owner-avatar-mini" title={node.owner}>{node.owner.slice(0, 1)}</span></td>
-              <td>{renderStatusCell(node)}</td>
-              <td>{renderProgressCell(node)}</td>
-              <td>{formatShortDate(node.dueDate)}</td>
-              <td>
-                <div className="row-actions compact-row-actions">
-                  <Button tone="ghost" onClick={() => onEditTask(node)}>编辑</Button>
-                  <Button tone="danger" onClick={() => onDeleteTask(node.id)}>删除</Button>
-                </div>
-              </td>
-            </tr>
-          ))}
-          {!nodes.length ? <tr><td colSpan={7} className="muted">没有匹配的任务。</td></tr> : null}
+          {displayedNodes.map((node) => {
+            const editable = canEditLeafSubtask(node);
+            const selected = selectedTaskIds.has(node.id);
+            return (
+              <tr key={node.id} className={`${node.depth ? "tree-row child" : "tree-row"} ${selected ? "selected" : ""}`} aria-selected={selected}>
+                <td className="task-select-col">
+                  {editable ? (
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      aria-label={`Select ${node.title}`}
+                      onChange={(event) => toggleSelection(node.id, event.currentTarget.checked)}
+                    />
+                  ) : (
+                    <span className="task-selection-lock" title="主任务由子任务自动汇总">自动</span>
+                  )}
+                </td>
+                <td>
+                  <TaskTitleCell node={node} collapsed={collapsed} onToggle={(taskId) => setCollapsed((value) => toggleCollapsed(value, taskId))} />
+                </td>
+                <td><span className="muted">{node.type} / {stageLabel(state, node.stage, project.id)}</span></td>
+                <td><span className="owner-avatar-mini" title={node.owner}>{node.owner.slice(0, 1)}</span></td>
+                <td>{renderStatusCell(node)}</td>
+                <td>{renderProgressCell(node)}</td>
+                <td>{formatShortDate(node.dueDate)}</td>
+                <td>
+                  <div className="row-actions compact-row-actions">
+                    <Button tone="ghost" onClick={() => onEditTask(node)}>编辑</Button>
+                    <Button tone="danger" onClick={() => onDeleteTask(node.id)}>删除</Button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+          {!displayedNodes.length ? <tr><td colSpan={8} className="muted">当前视图没有匹配任务。</td></tr> : null}
         </tbody>
       </table>
     </Card>

@@ -143,12 +143,19 @@ function milestoneId(title: string, dueDate: string, index: number) {
   return base || `milestone-${index + 1}`;
 }
 
+export function normalizeProjectMilestoneText(value?: string) {
+  return String(value || "")
+    .trim()
+    .replace(/^M\s*\d+\s*[:：.\-、]?\s*/i, "")
+    .trim();
+}
+
 function parseMilestoneText(value?: string): Partial<ProjectMilestone> | null {
   const text = String(value || "").trim();
   if (!text) return null;
   const dateText = text.match(/[（(]\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2})\s*[）)]/)?.[1] || "";
   const dueDate = normalizeMilestoneDate(dateText);
-  const title = text.replace(/[（(]\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2})\s*[）)]/g, "").trim();
+  const title = normalizeProjectMilestoneText(text.replace(/[（(]\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2})\s*[）)]/g, ""));
   return title ? { title, dueDate, status: "未开始", description: "" } : null;
 }
 
@@ -158,7 +165,7 @@ export function normalizeProjectMilestones(milestones?: Array<Partial<ProjectMil
   return source
     .map((item, index): ProjectMilestone | null => {
       const partial = typeof item === "string" ? parseMilestoneText(item) : item;
-      const title = String(partial?.title || "").trim();
+      const title = normalizeProjectMilestoneText(partial?.title);
       if (!title) return null;
       const dueDate = normalizeMilestoneDate(partial?.dueDate || "");
       const key = `${title}|${dueDate}`;
@@ -172,8 +179,7 @@ export function normalizeProjectMilestones(milestones?: Array<Partial<ProjectMil
         description: String(partial?.description || "").trim(),
       };
     })
-    .filter((milestone): milestone is ProjectMilestone => Boolean(milestone))
-    .sort((left, right) => (left.dueDate || "9999-12-31").localeCompare(right.dueDate || "9999-12-31") || left.title.localeCompare(right.title));
+    .filter((milestone): milestone is ProjectMilestone => Boolean(milestone));
 }
 
 export function milestonesFromDeliverables(deliverables: Deliverable[], projectId: string): ProjectMilestone[] {
@@ -192,7 +198,7 @@ export function milestonesFromDeliverables(deliverables: Deliverable[], projectI
 
 export function formatProjectMilestoneOption(milestone: Pick<ProjectMilestone, "title" | "dueDate">) {
   const date = milestone.dueDate ? milestone.dueDate.slice(5).replace("-", "-") : "";
-  return `${milestone.title}${date ? ` (${date})` : ""}`;
+  return `${normalizeProjectMilestoneText(milestone.title)}${date ? ` (${date})` : ""}`;
 }
 
 export function createProjectStageConfig(

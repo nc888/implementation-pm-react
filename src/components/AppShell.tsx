@@ -78,6 +78,7 @@ export function AppShell({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarManualOpen, setSidebarManualOpen] = useState(false);
   const themeSwitchTimerRef = useRef<number | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [visualTheme, setVisualTheme] = useState<VisualTheme>(() => {
     try {
       const savedTheme = window.localStorage.getItem(visualThemeStorageKey);
@@ -93,7 +94,7 @@ export function AppShell({
   const showQuickAddTask = state.ui.currentPage === "board" || state.ui.currentPage === "list" || state.ui.currentPage === "gantt";
   const isSettingsPage = state.ui.currentPage === "settings" || state.ui.currentPage === "modelSettings" || state.ui.currentPage === "stageSettings" || state.ui.currentPage === "emailSettings";
   const effectiveSidebarCollapsed = isSettingsPage ? false : sidebarCollapsed;
-  const hideSidebar = activeSection.key === "aiGeneration" || state.ui.currentPage === "assistant";
+  const hideSidebar = state.ui.currentPage === "assistant" || activeSection.key === "aiGeneration";
   const hideTopbar = state.ui.currentPage === "assistant" || activeSection.key === "aiGeneration";
   const displayTitle = state.ui.currentPage === "overview" ? `${title}：${project.name}` : title;
   const pageKicker =
@@ -150,6 +151,27 @@ export function AppShell({
   useEffect(() => {
     if (!showProjectExecutionActions && state.ui.search) onSearch("");
   }, [showProjectExecutionActions, state.ui.search, onSearch]);
+
+  useEffect(() => {
+    if (!showProjectExecutionActions) return;
+    const isTextEditingTarget = (target: EventTarget | null) =>
+      target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName));
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && key === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+      if (event.key === "/" && !isTextEditingTarget(event.target)) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showProjectExecutionActions]);
 
   const switchVisualTheme = () => {
     if (themeSwitchTimerRef.current !== null) {
@@ -274,9 +296,11 @@ export function AppShell({
                   <label className="search-field">
                     <Search aria-hidden="true" />
                     <input
+                      ref={searchInputRef}
                       value={state.ui.search}
                       onChange={(event) => onSearch(event.target.value)}
-                      placeholder="搜索项目、事项、交付物、风险"
+                      placeholder="搜索 / 或 Ctrl K"
+                      aria-label="搜索项目执行数据，快捷键斜杠或 Ctrl K"
                     />
                   </label>
                   <button className="button ghost" onClick={() => onExport("project")}>

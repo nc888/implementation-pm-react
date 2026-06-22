@@ -38,9 +38,27 @@ const AICODEMIRROR_GPT55_URL = "https://api.aicodemirror.com/api/codex/v1/chat/c
 
 const clone = <T>(value: T): T => structuredClone(value);
 const taskCodeCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+const taskStatusValues: TaskStatus[] = ["todo", "doing", "customer", "blocked", "done"];
+const taskPriorityValues: Task["priority"][] = ["高", "中", "低"];
+
+export type TaskBulkPatch = Partial<Pick<Task, "status" | "stage" | "priority" | "owner" | "startDate" | "dueDate">> & {
+  progress?: number;
+};
 
 function clampProgress(value: number) {
   return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 0;
+}
+
+function canPatchTaskInBulk(tasks: Task[], task: Task) {
+  return Boolean(task.parentId && !tasks.some((item) => item.parentId === task.id));
+}
+
+function normalizeTaskStatus(value: unknown): TaskStatus | null {
+  return taskStatusValues.includes(value as TaskStatus) ? (value as TaskStatus) : null;
+}
+
+function normalizeTaskPriority(value: unknown): Task["priority"] | null {
+  return taskPriorityValues.includes(value as Task["priority"]) ? (value as Task["priority"]) : null;
 }
 
 function localDateKey(date = new Date()) {
@@ -576,6 +594,7 @@ export interface ProjectRepository {
   exportJson(state: AppState): string;
   updateTaskStatus(state: AppState, taskId: string, status: TaskStatus): AppState;
   updateTaskProgress(state: AppState, taskId: string, progress: number): AppState;
+  patchTasks(state: AppState, taskIds: string[], patch: TaskBulkPatch): AppState;
   addTask(state: AppState, task: Omit<Task, "id" | "updatedAt">): AppState;
   addWeeklyReport(state: AppState, report: WeeklyReportInput): AppState;
   upsertWeeklyReportPreference(state: AppState, preference: WeeklyReportPreferenceInput): AppState;
@@ -632,6 +651,86 @@ function createBaseRepository(storageLabel: string, persistence: Pick<ProjectRep
         task.updatedAt = new Date().toISOString();
       }
       return next;
+    },
+    patchTasks(state, taskIds, patch) {
+      const taskIdSet = new Set(taskIds.filter(Boolean));
+      if (!taskIdSet.size) return state;
+      const next = clone(state);
+      let changed = false;
+      const now = new Date().toISOString();
+      next.tasks = next.tasks.map((task) => {
+        if (!taskIdSet.has(task.id) || !canPatchTaskInBulk(next.tasks, task)) return task;
+        const updated = { ...task };
+        let taskChanged = false;
+
+        const nextStatus = patch.status === undefined ? null : normalizeTaskStatus(patch.status);
+        if (nextStatus && updated.status !== nextStatus) {
+          updated.status = nextStatus;
+          taskChanged = true;
+        }
+        if (nextStatus === "done" && updated.progress !== 100) {
+          updated.progress = 100;
+          taskChanged = true;
+        }
+
+        if (patch.progress !== undefined) {
+          const nextProgress = clampProgress(patch.progress);
+          if (updated.progress !== nextProgress) {
+            updated.progress = nextProgress;
+            taskChanged = true;
+          }
+          if (nextProgress === 100 && updated.status !== "done") {
+            updated.status = "done";
+            taskChanged = true;
+          } else if (nextProgress < 100 && updated.status === "done") {
+            updated.status = nextProgress > 0 ? "doing" : "todo";
+            taskChanged = true;
+          }
+        }
+
+        const nextPriority = patch.priority === undefined ? null : normalizeTaskPriority(patch.priority);
+        if (nextPriority && updated.priority !== nextPriority) {
+          updated.priority = nextPriority;
+          taskChanged = true;
+        }
+
+        if (patch.owner !== undefined) {
+          const owner = String(patch.owner || "").trim();
+          if (owner && updated.owner !== owner) {
+            updated.owner = owner;
+            taskChanged = true;
+          }
+        }
+
+        if (patch.stage !== undefined) {
+          const stage = normalizeTaskStage(patch.stage, stagesForProject(next.projectStageConfigs, next.taskStages, task.projectId));
+          if (updated.stage !== stage) {
+            updated.stage = stage;
+            taskChanged = true;
+          }
+        }
+
+        if (patch.startDate !== undefined) {
+          const startDate = String(patch.startDate || "").trim();
+          if (updated.startDate !== startDate) {
+            updated.startDate = startDate;
+            taskChanged = true;
+          }
+        }
+
+        if (patch.dueDate !== undefined) {
+          const dueDate = String(patch.dueDate || "").trim();
+          if (updated.dueDate !== dueDate) {
+            updated.dueDate = dueDate;
+            taskChanged = true;
+          }
+        }
+
+        if (!taskChanged) return task;
+        changed = true;
+        return { ...updated, updatedAt: now };
+      });
+      return changed ? next : state;
     },
     addTask(state, task) {
       const next = clone(state);

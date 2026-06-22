@@ -56,6 +56,24 @@ export type ProjectImportResult = {
   projectNames: string[];
 };
 
+export type ProjectImportPreview = {
+  schemaVersion: string;
+  exportScope: string;
+  exportedAt: string;
+  projectCount: number;
+  taskCount: number;
+  scopeItemCount: number;
+  deliverableCount: number;
+  riskIssueCount: number;
+  weeklyReportCount: number;
+  workflowCount: number;
+  aiMessageCount: number;
+  projectNames: string[];
+  plannedProjectNames: string[];
+  duplicateNames: Array<{ sourceName: string; importName: string }>;
+  warnings: string[];
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const asArray = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 const isString = (value: unknown): value is string => typeof value === "string" && value.length > 0;
@@ -189,6 +207,45 @@ function nextProjectName(baseName: string, existingNames: Set<string>) {
     candidate = `${baseName} (导入 ${index})`;
   }
   return candidate;
+}
+
+export function previewProjectsFromBackup(current: AppState, payload: unknown): ProjectImportPreview {
+  const source = buildImportSource(payload);
+  const payloadRecord = isRecord(payload) ? payload : {};
+  const existingProjectNames = new Set(current.projects.map((project) => project.name));
+  const duplicateNames: ProjectImportPreview["duplicateNames"] = [];
+  const plannedProjectNames = source.projects.map((project) => {
+    const importName = nextProjectName(project.name, existingProjectNames);
+    existingProjectNames.add(importName);
+    if (importName !== project.name) duplicateNames.push({ sourceName: project.name, importName });
+    return importName;
+  });
+  const warnings = [
+    "Import creates copied projects with new IDs. Existing projects are not overwritten.",
+    source.tasks.length ? "" : "No tasks were found in this JSON.",
+    source.deliverables.length ? "" : "No deliverables were found in this JSON.",
+    source.risksIssues.length ? "" : "No risks or issues were found in this JSON.",
+    duplicateNames.length ? "Duplicate project names will be renamed during import." : "",
+    source.deliveryWorkflows.length || source.aiMessages.length ? "AI draft/history records are included; the AI generation center entry is currently hidden." : "",
+  ].filter(isString);
+
+  return {
+    schemaVersion: String(payloadRecord.schemaVersion ?? "unknown"),
+    exportScope: String(payloadRecord.exportScope ?? (source.projects.length === 1 ? "project" : "all")),
+    exportedAt: String(payloadRecord.exportedAt ?? ""),
+    projectCount: source.projects.length,
+    taskCount: source.tasks.length,
+    scopeItemCount: source.scopeItems.length,
+    deliverableCount: source.deliverables.length,
+    riskIssueCount: source.risksIssues.length,
+    weeklyReportCount: source.weeklyReports.length,
+    workflowCount: source.deliveryWorkflows.length,
+    aiMessageCount: source.aiMessages.length,
+    projectNames: source.projects.map((project) => project.name),
+    plannedProjectNames,
+    duplicateNames,
+    warnings,
+  };
 }
 
 function zeroMetrics(): ProjectMetrics & { totalTasks: number; pendingDeliverables: number } {
