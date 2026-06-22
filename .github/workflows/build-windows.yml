@@ -1,0 +1,79 @@
+name: Build Windows Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "win-*"
+      - "v*"
+
+jobs:
+  build-windows:
+    name: Build Windows installers
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Windows bundle tools
+        shell: powershell
+        run: |
+          choco install wixtoolset --no-progress -y
+          choco install nsis --no-progress -y
+
+          $wixBin = Get-ChildItem "${env:ProgramFiles(x86)}\WiX Toolset v3*\bin" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+          $nsisBin = "${env:ProgramFiles(x86)}\NSIS"
+
+          if ($wixBin) {
+            Add-Content $env:GITHUB_PATH $wixBin.FullName
+          }
+
+          if (Test-Path $nsisBin) {
+            Add-Content $env:GITHUB_PATH $nsisBin
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows MSI and EXE
+        run: npm run tauri:build:windows
+
+      - name: Collect Windows installers
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force output/windows | Out-Null
+
+          $bundleRoot = "src-tauri\target\release\bundle"
+          $files = @()
+          $files += Get-ChildItem "$bundleRoot\msi\*.msi" -ErrorAction SilentlyContinue
+          $files += Get-ChildItem "$bundleRoot\nsis\*.exe" -ErrorAction SilentlyContinue
+
+          if (-not $files) {
+            Write-Error "No Windows MSI or EXE installers were found in $bundleRoot"
+            exit 1
+          }
+
+          $files | ForEach-Object {
+            Copy-Item $_.FullName output/windows/
+            Write-Host "Collected $($_.Name)"
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: implementation-pm-windows
+          path: |
+            output/windows/*.msi
+            output/windows/*.exe
+            src-tauri/target/release/bundle/
+          if-no-files-found: error
