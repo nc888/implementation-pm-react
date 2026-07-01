@@ -1,5 +1,19 @@
-import { useRef, type ReactNode } from "react";
-import { ArrowRight, BriefcaseBusiness, CalendarClock, CircleAlert, MoreHorizontal, PackageCheck, Pencil, Plus, Trash2, Upload, UserCheck } from "lucide-react";
+import { useRef, useState, type ReactNode } from "react";
+import {
+  Archive,
+  ArrowRight,
+  BriefcaseBusiness,
+  CalendarClock,
+  CircleAlert,
+  MoreHorizontal,
+  PackageCheck,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Trash2,
+  Upload,
+  UserCheck,
+} from "lucide-react";
 import type { AppState, Project } from "../types";
 import {
   calcProjectMetrics,
@@ -7,6 +21,7 @@ import {
   projectRisks,
   projectTasks,
 } from "../services/contextBuilder";
+import { activeProjectIds, activeProjects, archivedProjects, isArchivedProject } from "../services/projectStatus";
 import type { AiService } from "../services/aiService";
 import { Badge, Button, Card, Metric, Progress } from "../components/ui";
 import {
@@ -92,6 +107,8 @@ export function PortalPage({
   onImportProject,
   onEditProject,
   onDeleteProject,
+  onArchiveProject,
+  onRestoreProject,
   aiService,
 }: {
   state: AppState;
@@ -100,24 +117,40 @@ export function PortalPage({
   onImportProject: (file: File) => void;
   onEditProject: (project: Project) => void;
   onDeleteProject: (projectId: string) => void;
+  onArchiveProject: (projectId: string) => void;
+  onRestoreProject: (projectId: string) => void;
   aiService: AiService;
 }) {
   const importInputRef = useRef<HTMLInputElement>(null);
-  const allTasks = state.tasks;
+  const [projectView, setProjectView] = useState<"active" | "archived">("active");
+  const activeProjectList = activeProjects(state);
+  const archivedProjectList = archivedProjects(state);
+  const activeIds = activeProjectIds(state);
+  const projectPool = projectView === "archived" ? archivedProjectList : activeProjectList;
+  const allTasks = state.tasks.filter((task) => activeIds.has(task.projectId));
   const week = currentWeekRange();
   const today = localDateKey();
-  const projects = state.projects.filter((project) => projectMatchesSearch(state, project));
-  const attentionProjects = state.projects.filter((project) => project.health !== "健康");
+  const projects = projectPool.filter((project) => projectMatchesSearch(state, project));
+  const attentionProjects = activeProjectList.filter((project) => project.health !== "健康");
   const weekTasks = allTasks.filter((task) => isThisWeekTask(task, week));
   const overdueTasks = allTasks.filter((task) => isOverdueTask(task, today));
   const customerTasks = allTasks.filter((task) => task.status === "customer");
   const blockedTasks = allTasks.filter((task) => task.status === "blocked");
-  const pendingDeliverables = state.deliverables.filter(isPendingDeliverable);
-  const weekDeliverables = state.deliverables.filter((deliverable) => isThisWeekDeliverable(deliverable, week));
+  const activeDeliverables = state.deliverables.filter((deliverable) => activeIds.has(deliverable.projectId));
+  const pendingDeliverables = activeDeliverables.filter(isPendingDeliverable);
+  const weekDeliverables = activeDeliverables.filter((deliverable) => isThisWeekDeliverable(deliverable, week));
+  const emptyText =
+    projectView === "archived"
+      ? state.ui.search.trim()
+        ? "没有匹配的归档项目。"
+        : "暂无归档项目。归档后的项目会保留完整数据，并在这里恢复。"
+      : state.ui.search.trim()
+        ? "没有匹配的在管项目。"
+        : "暂无在管项目。";
   return (
     <div className="portal-dashboard">
       <section className="portal-stats" aria-label="项目态势">
-        <PortalStat icon={<BriefcaseBusiness />} title="在管项目" value={state.projects.length} meta={`${attentionProjects.length} 个需关注`} tone="primary" alert={attentionProjects.length > 0} />
+        <PortalStat icon={<BriefcaseBusiness />} title="在管项目" value={activeProjectList.length} meta={`${attentionProjects.length} 个需关注`} tone="primary" alert={attentionProjects.length > 0} />
         <PortalStat icon={<CalendarClock />} title="本周到期" value={weekTasks.length} meta={`${overdueTasks.length} 个逾期`} tone={overdueTasks.length ? "danger" : "primary"} alert={overdueTasks.length > 0} />
         <PortalStat icon={<UserCheck />} title="待确认" value={customerTasks.length} meta="跨项目" tone={customerTasks.length ? "warning" : "success"} alert={customerTasks.length > 0} />
         <PortalStat icon={<CircleAlert />} title="已阻塞" value={blockedTasks.length} meta="需处理" tone={blockedTasks.length ? "danger" : "success"} alert={blockedTasks.length > 0} />
@@ -129,6 +162,28 @@ export function PortalPage({
           <p>点击卡片进入项目详情，适合同时管理多个软件实施项目。</p>
         </div>
         <div className="section-actions">
+          <div className="portal-project-view-toggle" role="tablist" aria-label="项目视图">
+            <button
+              type="button"
+              className={projectView === "active" ? "active" : ""}
+              onClick={() => setProjectView("active")}
+              role="tab"
+              aria-selected={projectView === "active"}
+            >
+              在管项目
+              <span>{activeProjectList.length}</span>
+            </button>
+            <button
+              type="button"
+              className={projectView === "archived" ? "active" : ""}
+              onClick={() => setProjectView("archived")}
+              role="tab"
+              aria-selected={projectView === "archived"}
+            >
+              已归档
+              <span>{archivedProjectList.length}</span>
+            </button>
+          </div>
           <Button tone="ghost" onClick={() => importInputRef.current?.click()}>
             <Upload aria-hidden="true" />
             导入项目
@@ -152,6 +207,7 @@ export function PortalPage({
       </div>
       <section className="grid project-grid">
         {projects.map((project) => {
+          const archived = isArchivedProject(project);
           const metrics = calcProjectMetrics(state, project);
           const score = aiService.scoreProject(state, project);
           const personDays = calcProjectPersonDays(state, project);
@@ -163,7 +219,7 @@ export function PortalPage({
           return (
             <article
               key={project.id}
-              className={`card project-card ${project.id === state.ui.currentProjectId ? "selected" : ""}`}
+              className={`card project-card ${project.id === state.ui.currentProjectId ? "selected" : ""} ${archived ? "archived" : ""}`}
               onClick={() => onProject(project.id)}
             >
               <div className="project-card-menu" onClick={(event) => event.stopPropagation()}>
@@ -171,20 +227,42 @@ export function PortalPage({
                   <MoreHorizontal aria-hidden="true" />
                 </button>
                 <div className="project-card-menu-popover">
-                  <button type="button" onClick={() => onEditProject(project)}>
-                    <Pencil aria-hidden="true" />
-                    编辑
-                  </button>
-                  <button type="button" className="danger" onClick={() => onDeleteProject(project.id)}>
-                    <Trash2 aria-hidden="true" />
-                    删除
-                  </button>
+                  {archived ? (
+                    <>
+                      <button type="button" onClick={() => onRestoreProject(project.id)}>
+                        <RotateCcw aria-hidden="true" />
+                        恢复
+                      </button>
+                      <button type="button" className="danger" onClick={() => onDeleteProject(project.id)}>
+                        <Trash2 aria-hidden="true" />
+                        删除
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" onClick={() => onEditProject(project)}>
+                        <Pencil aria-hidden="true" />
+                        编辑
+                      </button>
+                      <button type="button" onClick={() => onArchiveProject(project.id)}>
+                        <Archive aria-hidden="true" />
+                        归档
+                      </button>
+                      <button type="button" className="danger" onClick={() => onDeleteProject(project.id)}>
+                        <Trash2 aria-hidden="true" />
+                        删除
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
               <div className="project-card-head">
                 <div className="project-card-title">
                   <h3>{project.name}</h3>
-                  <p>{project.client}</p>
+                  <p>
+                    {project.client}
+                    {archived ? <span className="project-archive-label">已归档</span> : null}
+                  </p>
                 </div>
                 <div className="project-health-signal" title={`健康评分: ${score.score}/100, ${scoreModeLabel(score.mode)}, ${score.level}`}>
                   <span className={`project-status-dot ${scoreDotClass(score.level)}`} aria-hidden="true" />
@@ -210,8 +288,8 @@ export function PortalPage({
               </div>
               <div className="project-card-footer">
                 <div className="project-next-line">
-                  <span>Next:</span>
-                  <strong>{project.nextMilestone}</strong>
+                  <span>{archived ? "Archived:" : "Next:"}</span>
+                  <strong>{archived ? (project.archivedAt ? formatShortDate(project.archivedAt) : "未记录") : project.nextMilestone}</strong>
                 </div>
                 {visibleIndicators.length ? (
                   <div className="chip-line project-card-chips">
@@ -230,14 +308,14 @@ export function PortalPage({
                     onProject(project.id);
                   }}
                 >
-                  进入项目
+                  {archived ? "查看项目" : "进入项目"}
                   <ArrowRight aria-hidden="true" />
                 </button>
               </div>
             </article>
           );
         })}
-        {!projects.length ? <div className="empty">没有匹配的项目。</div> : null}
+        {!projects.length ? <div className="empty">{emptyText}</div> : null}
       </section>
     </div>
   );
@@ -246,7 +324,7 @@ export function PortalPage({
 function DashboardPageLegacy({ state, aiService }: { state: AppState; aiService: AiService }) {
   const week = currentWeekRange();
   const today = localDateKey();
-  const rows = state.projects
+  const rows = activeProjects(state)
     .filter((project) => projectMatchesSearch(state, project))
     .map((project) => ({ project, score: aiService.scoreProject(state, project), metrics: calcProjectMetrics(state, project) }))
     .sort((a, b) => a.score.score - b.score.score);
@@ -437,7 +515,7 @@ function DashboardPageLegacy({ state, aiService }: { state: AppState; aiService:
 export function DashboardPage({ state, aiService }: { state: AppState; aiService: AiService }) {
   const week = currentWeekRange();
   const today = localDateKey();
-  const rows = state.projects
+  const rows = activeProjects(state)
     .filter((project) => projectMatchesSearch(state, project))
     .map((project) => ({ project, score: aiService.scoreProject(state, project), metrics: calcProjectMetrics(state, project) }))
     .sort((a, b) => a.score.score - b.score.score);

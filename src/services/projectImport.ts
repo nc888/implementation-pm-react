@@ -198,13 +198,24 @@ function buildImportSource(payload: unknown): ImportSource {
   };
 }
 
-function nextProjectName(baseName: string, existingNames: Set<string>) {
-  if (!existingNames.has(baseName)) return baseName;
+export function normalizeProjectNameForUniqueness(value: string) {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+export function projectNameExists(projects: Pick<Project, "id" | "name">[], name: string, exceptProjectId = "") {
+  const normalized = normalizeProjectNameForUniqueness(name);
+  return Boolean(normalized && projects.some((project) => project.id !== exceptProjectId && normalizeProjectNameForUniqueness(project.name) === normalized));
+}
+
+export function nextProjectName(baseName: string, existingNames: Set<string>, suffix = "导入") {
+  const normalizedBaseName = normalizeProjectNameForUniqueness(baseName) || "project";
+  if (!existingNames.has(normalizedBaseName)) return baseName.trim() || "未命名项目";
   let index = 1;
-  let candidate = `${baseName} (导入)`;
-  while (existingNames.has(candidate)) {
+  const displayBaseName = baseName.trim() || "未命名项目";
+  let candidate = `${displayBaseName} (${suffix})`;
+  while (existingNames.has(normalizeProjectNameForUniqueness(candidate))) {
     index += 1;
-    candidate = `${baseName} (导入 ${index})`;
+    candidate = `${displayBaseName} (${suffix} ${index})`;
   }
   return candidate;
 }
@@ -212,11 +223,11 @@ function nextProjectName(baseName: string, existingNames: Set<string>) {
 export function previewProjectsFromBackup(current: AppState, payload: unknown): ProjectImportPreview {
   const source = buildImportSource(payload);
   const payloadRecord = isRecord(payload) ? payload : {};
-  const existingProjectNames = new Set(current.projects.map((project) => project.name));
+  const existingProjectNames = new Set(current.projects.map((project) => normalizeProjectNameForUniqueness(project.name)));
   const duplicateNames: ProjectImportPreview["duplicateNames"] = [];
   const plannedProjectNames = source.projects.map((project) => {
     const importName = nextProjectName(project.name, existingProjectNames);
-    existingProjectNames.add(importName);
+    existingProjectNames.add(normalizeProjectNameForUniqueness(importName));
     if (importName !== project.name) duplicateNames.push({ sourceName: project.name, importName });
     return importName;
   });
@@ -315,7 +326,7 @@ function mappedIds(ids: string[], idMap: Map<string, string>) {
 
 export function importProjectsFromBackup(current: AppState, payload: unknown): ProjectImportResult {
   const source = buildImportSource(payload);
-  const existingProjectNames = new Set(current.projects.map((project) => project.name));
+  const existingProjectNames = new Set(current.projects.map((project) => normalizeProjectNameForUniqueness(project.name)));
   const projectIdMap = new Map(source.projects.map((project) => [project.id, crypto.randomUUID()]));
   const taskIdMap = new Map(source.tasks.map((task) => [task.id, crypto.randomUUID()]));
   const deliverableIdMap = new Map(source.deliverables.map((deliverable) => [deliverable.id, crypto.randomUUID()]));
@@ -324,7 +335,7 @@ export function importProjectsFromBackup(current: AppState, payload: unknown): P
   const importedProjects = source.projects.map((project) => {
     const id = projectIdMap.get(project.id) || crypto.randomUUID();
     const name = nextProjectName(project.name, existingProjectNames);
-    existingProjectNames.add(name);
+    existingProjectNames.add(normalizeProjectNameForUniqueness(name));
     const importedProject = { ...project, id, name };
     newProjectsByOldId.set(project.id, importedProject);
     return importedProject;

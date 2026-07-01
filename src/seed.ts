@@ -96,7 +96,7 @@ const risk = (
 ): RiskIssue => ({ id, projectId, kind, title, severity, status, riskVisibility, responsePlan, internalHandling, customerAssistance, linkedTaskId });
 
 export const defaultData: AppState = {
-  schemaVersion: 18,
+  schemaVersion: 19,
   ui: {
     currentPage: "portal",
     currentProjectId: "p-crm",

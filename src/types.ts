@@ -33,6 +33,7 @@ export type WeeklyProjectStatus = "健康" | "延期" | "暂停" | "需关注" |
 export type WeeklyMailDraftStatus = "not-created" | "local-draft" | "mailbox-draft" | "failed";
 export type WeeklyMarkdownArchiveStatus = "not-archived" | "archived" | "failed";
 export type WeeklyReportAudience = "internal" | "customer";
+export type ProjectStatus = "active" | "archived";
 
 export interface TaskStageDefinition {
   id: string;
@@ -68,6 +69,9 @@ export interface Project {
   client: string;
   phase: string;
   health: "健康" | "关注" | "延期";
+  status?: ProjectStatus;
+  archivedAt?: string;
+  archiveReason?: string;
   owner: string;
   startDate: string;
   endDate: string;
@@ -124,6 +128,8 @@ export interface Deliverable {
   attachmentPath?: string;
   attachmentUploadedAt?: string;
 }
+
+export type DeliverableBulkPatch = Partial<Pick<Deliverable, "status" | "acceptance" | "dueDate" | "attachmentRequirement">>;
 
 export interface RiskIssue {
   id: string;
@@ -278,11 +284,20 @@ export interface WorkflowHandoffContent {
   wbs: string;
 }
 
+export interface WorkflowSupplementContent {
+  sow: string;
+  personDay: string;
+  hardware: string;
+  wbs: string;
+  implementation: string;
+}
+
 export interface DeliveryWorkflow {
   projectId: string;
   sow: SowInput;
   resourceInputs: ResourceAssessmentInputs;
   handoff: WorkflowHandoffContent;
+  supplements: WorkflowSupplementContent;
   personDayAssessment: AiDraft;
   hardwareAssessment: AiDraft;
   wbsPlan: AiDraft;

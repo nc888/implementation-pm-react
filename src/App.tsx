@@ -4,7 +4,14 @@ import { AppShell } from "./components/AppShell";
 import { ConfirmDialog, DeliverableDialog, ProjectDialog, RiskIssueDialog, ScopeItemDialog, TaskDialog } from "./components/EntityDialogs";
 import { createRepository } from "./services/repositoryFactory";
 import { migrateAppState, type ProjectRepository, type TaskBulkPatch } from "./services/repository";
-import { exportSingleProjectBackupJson, importProjectsFromBackup, previewProjectsFromBackup, type ProjectBackupScope, type ProjectImportPreview } from "./services/projectImport";
+import {
+  exportSingleProjectBackupJson,
+  importProjectsFromBackup,
+  previewProjectsFromBackup,
+  projectNameExists,
+  type ProjectBackupScope,
+  type ProjectImportPreview,
+} from "./services/projectImport";
 import {
   buildProjectSnapshot,
   createProjectStageConfig,
@@ -21,12 +28,15 @@ import {
 } from "./services/contextBuilder";
 import { ruleBasedAiService } from "./services/aiService";
 import {
+  AI_GENERATION_WORKSPACE_ID,
+  buildAiGenerationProjectContext,
   draftKeyFor,
   canRunHardwareSkillKernel,
-  confirmProjectFlow,
+  confirmAiGenerationWorkflowAsNewProject,
   emptyWorkflow,
   type DeliveryDraftKind,
   generateDeliveryDraft,
+  getAiGenerationWorkflow,
   getWorkflow,
   extractSowHandoffContent,
   mergeResourceInputsFromSowHandoff,
@@ -58,11 +68,13 @@ import {
   looksLikeProjectDataCommandRequest,
   parseProjectDataCommandPlan,
 } from "./services/assistantProjectDataService";
+import { activeProjects, fallbackProjectIdAfterArchive, isArchivedProject } from "./services/projectStatus";
 import type {
   AiModelConfig,
   AppState,
   AssistantScope,
   Deliverable,
+  DeliverableBulkPatch,
   DeliveryWorkflow,
   EmailConfig,
   PageKey,
@@ -342,14 +354,15 @@ export function App() {
   const setProject = (projectId: string) => {
     setState((current) => {
       if (!current) return current;
+      const project = current.projects.find((item) => item.id === projectId);
+      const isArchived = isArchivedProject(project);
+      const shouldEnterOverview = isArchived || ["portal", "dashboard", "assistant", "settings", "modelSettings", "stageSettings", "emailSettings"].includes(current.ui.currentPage);
       return {
         ...current,
         ui: {
           ...current.ui,
           currentProjectId: projectId,
-          currentPage: ["portal", "dashboard", "assistant", "settings", "modelSettings", "stageSettings", "emailSettings"].includes(current.ui.currentPage)
-            ? "overview"
-            : current.ui.currentPage,
+          currentPage: shouldEnterOverview ? "overview" : current.ui.currentPage,
         },
       };
     });
@@ -456,11 +469,15 @@ export function App() {
 
   const saveProject = (project: Project, milestones?: ProjectMilestone[]) => {
     const exists = state.projects.some((item) => item.id === project.id);
+    if (projectNameExists(state.projects, project.name, project.id)) {
+      notify(`已存在同名项目「${project.name.trim()}」，请修改项目名称后再保存。`, "warning");
+      return;
+    }
     setState((current) => {
       if (!current) return current;
       const shouldSaveMilestones = Array.isArray(milestones);
       const normalizedMilestones = shouldSaveMilestones ? normalizeProjectMilestones(milestones) : [];
-      const normalizedProject = { ...project, nextMilestone: normalizeProjectMilestoneText(project.nextMilestone) };
+      const normalizedProject: Project = { ...project, status: project.status || "active", nextMilestone: normalizeProjectMilestoneText(project.nextMilestone) };
       const projects = exists ? current.projects.map((item) => (item.id === project.id ? normalizedProject : item)) : [...current.projects, normalizedProject];
       const projectStageConfigs =
         current.projectStageConfigs.some((item) => item.projectId === project.id)
@@ -485,6 +502,75 @@ export function App() {
     notify(exists ? "项目已更新。" : "项目已创建并进入项目概览。");
   };
 
+  const archiveProject = (projectId: string) => {
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project || isArchivedProject(project)) return;
+    if (activeProjects(state).length <= 1) {
+      notify("至少需要保留一个在管项目，不能归档最后一个在管项目。", "warning");
+      return;
+    }
+    requestConfirm({
+      title: "归档项目",
+      description: `确认归档「${project.name}」？归档后项目会从在管视图、项目切换和总览统计中隐藏，数据仍会保留，可在已归档中恢复。`,
+      confirmText: "归档项目",
+      tone: "primary",
+      onConfirm: () => {
+        setState((current) => {
+          if (!current) return current;
+          const archivedAt = new Date().toISOString();
+          const nextProjectId = current.ui.currentProjectId === projectId ? fallbackProjectIdAfterArchive(current, projectId) : current.ui.currentProjectId;
+          return {
+            ...current,
+            projects: current.projects.map((item) =>
+              item.id === projectId
+                ? {
+                    ...item,
+                    status: "archived",
+                    archivedAt,
+                    archiveReason: item.archiveReason || "",
+                  }
+                : item,
+            ),
+            ui: {
+              ...current.ui,
+              currentProjectId: nextProjectId || current.ui.currentProjectId,
+              currentPage: current.ui.currentProjectId === projectId ? "portal" : current.ui.currentPage,
+            },
+          };
+        });
+        notify("项目已归档，可在已归档视图中恢复。", "primary");
+      },
+    });
+  };
+
+  const restoreProject = (projectId: string) => {
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project || !isArchivedProject(project)) return;
+    setState((current) =>
+      current
+        ? {
+            ...current,
+            projects: current.projects.map((item) =>
+              item.id === projectId
+                ? {
+                    ...item,
+                    status: "active",
+                    archivedAt: "",
+                    archiveReason: "",
+                  }
+                : item,
+            ),
+            ui: {
+              ...current.ui,
+              currentProjectId: projectId,
+              currentPage: "overview",
+            },
+          }
+        : current,
+    );
+    notify(`已恢复项目：${project.name}`, "success");
+  };
+
   const deleteProject = (projectId: string) => {
     const project = state.projects.find((item) => item.id === projectId);
     if (!project) return;
@@ -492,9 +578,12 @@ export function App() {
       notify("至少需要保留一个项目，不能删除最后一个项目。", "warning");
       return;
     }
+    const archived = isArchivedProject(project);
     requestConfirm({
-      title: "删除项目",
-      description: `确认删除「${project.name}」？项目下的事项、范围、交付物、风险问题、周报和 AI 生成草稿都会一起删除。`,
+      title: archived ? "永久删除归档项目" : "删除项目",
+      description: archived
+        ? `确认永久删除已归档项目「${project.name}」？这不是归档，项目下的事项、范围、交付物、风险问题、周报和 AI 生成草稿都会一起删除，无法恢复。`
+        : `确认删除「${project.name}」？项目下的事项、范围、交付物、风险问题、周报和 AI 生成草稿都会一起删除。`,
       confirmText: "删除项目",
       onConfirm: () => {
         setState((current) => {
@@ -651,6 +740,19 @@ export function App() {
     await persistImmediately(nextState);
   };
 
+  const updateDeliverablesBatch = async (deliverableIds: string[], patch: DeliverableBulkPatch) => {
+    const uniqueIds = Array.from(new Set(deliverableIds.filter(Boolean)));
+    if (!uniqueIds.length || !Object.keys(patch).length) return;
+    const idSet = new Set(uniqueIds);
+    const nextState = {
+      ...state,
+      deliverables: state.deliverables.map((item) => (idSet.has(item.id) ? { ...item, ...patch } : item)),
+    };
+    setState(nextState);
+    await persistImmediately(nextState);
+    notify(`已批量更新 ${uniqueIds.length} 个交付物。`, "primary");
+  };
+
   const saveDeliverableStoragePath = async (projectId: string, deliverableStoragePath: string) => {
     const nextState = {
       ...state,
@@ -672,6 +774,31 @@ export function App() {
           current ? { ...current, deliverables: current.deliverables.filter((item) => item.id !== deliverableId) } : current,
         );
         notify("交付物已删除。", "danger");
+      },
+    });
+  };
+
+  const deleteDeliverablesBatch = (deliverableIds: string[]) => {
+    const uniqueIds = Array.from(new Set(deliverableIds.filter(Boolean)));
+    if (!uniqueIds.length) return;
+    const idSet = new Set(uniqueIds);
+    const selectedDeliverables = state.deliverables.filter((item) => idSet.has(item.id));
+    if (!selectedDeliverables.length) return;
+    requestConfirm({
+      title: "批量删除交付物",
+      description: `确认删除已选择的 ${selectedDeliverables.length} 个交付物？删除后项目概览、周报和 AI 快照中的交付物统计会同步变化。`,
+      confirmText: "删除交付物",
+      onConfirm: () => {
+        const nextState = {
+          ...state,
+          deliverables: state.deliverables.filter((item) => !idSet.has(item.id)),
+        };
+        setState(nextState);
+        void persistImmediately(nextState).catch((error) => {
+          const message = error instanceof Error ? error.message : "项目数据保存失败";
+          notify(`交付物删除后保存失败：${message}`, "danger");
+        });
+        notify(`已删除 ${selectedDeliverables.length} 个交付物。`, "danger");
       },
     });
   };
@@ -1159,31 +1286,21 @@ export function App() {
   };
 
   const resetCurrentWorkflow = () => {
-    const project = getProject(state);
     requestConfirm({
       title: "重置 AI 生成内容",
-      description: "确认清空当前项目的 SOW 输入、人天评估、硬件评估、WBS 与实施方案草稿？项目执行中心里已经生成的正式任务和交付物不会被删除。",
+      description: "确认清空 AI 生成中心的 SOW 输入、人天评估、硬件评估、WBS 与实施方案草稿？已经从草稿创建出的正式项目不会被删除。",
       confirmText: "确认重置",
       onConfirm: () => {
         setState((current) => {
           if (!current) return current;
-          const workflow = getWorkflow(current, project.id);
-          const resetWorkflow = emptyWorkflow(project.id);
-          return upsertWorkflow(current, {
-            ...resetWorkflow,
-            projectFlow: {
-              ...resetWorkflow.projectFlow,
-              generatedTaskIds: workflow.projectFlow.generatedTaskIds,
-              generatedDeliverableIds: workflow.projectFlow.generatedDeliverableIds,
-            },
-          });
+          return upsertWorkflow(current, emptyWorkflow(AI_GENERATION_WORKSPACE_ID));
         });
         notify("AI 生成步骤内容已重置。", "warning");
       },
     });
   };
 
-  const saveSow = (sow: SowInput, handoffContent?: string) => {
+  const saveSow = (sow: SowInput, handoffContent?: string, supplementContent?: string) => {
     setState((current) => {
       if (!current) return current;
       const workflow = getWorkflow(current, sow.projectId);
@@ -1195,13 +1312,27 @@ export function App() {
           ...workflow.handoff,
           sow: sowHandoff,
         },
+        supplements: {
+          ...workflow.supplements,
+          sow: supplementContent !== undefined ? supplementContent.trim() : workflow.supplements.sow,
+        },
         resourceInputs: sowHandoff ? mergeResourceInputsFromSowHandoff(sowHandoff, workflow.resourceInputs) : workflow.resourceInputs,
       });
     });
     notify("SOW 已保存。");
   };
 
-  const standardizeSow = async ({ projectId, fileName, rawContent }: { projectId: string; fileName: string; rawContent: string }) => {
+  const standardizeSow = async ({
+    projectId,
+    fileName,
+    rawContent,
+    supplementalInfo = "",
+  }: {
+    projectId: string;
+    fileName: string;
+    rawContent: string;
+    supplementalInfo?: string;
+  }) => {
     const trimmed = rawContent.trim();
     console.info("[SOW导入] 进入标准化流程", {
       projectId,
@@ -1222,7 +1353,9 @@ export function App() {
       return;
     }
 
-    const project = state.projects.find((item) => item.id === projectId) || getProject(state);
+    const workflow = getWorkflow(state, projectId);
+    const sowSupplement = (supplementalInfo || workflow.supplements.sow).trim();
+    const project = state.projects.find((item) => item.id === projectId) || buildAiGenerationProjectContext(workflow, state, projectId);
     console.info("[SOW导入] 准备调用SOW标准化", {
       containerProject: project.name,
       containerClient: project.client,
@@ -1230,6 +1363,7 @@ export function App() {
       model: config.model,
       allowRemoteRequest: config.allowRemoteRequest,
       hasApiKey: Boolean(config.apiKey?.trim()),
+      supplementChars: sowSupplement.length,
     });
     setStandardizingSow(true);
     const runId = crypto.randomUUID();
@@ -1244,12 +1378,13 @@ export function App() {
       inputSnapshot: {
         fileName,
         rawChars: trimmed.length,
+        supplementChars: sowSupplement.length,
         projectName: project.name,
         client: project.client,
       },
     });
     try {
-      const result = await normalizeSowWithAi(project, fileName, trimmed, config);
+      const result = await normalizeSowWithAi(project, fileName, trimmed, config, sowSupplement);
       console.info("[SOW导入] 标准化结果返回，准备写入工作流", {
         model: result.model,
         outputChars: result.content.length,
@@ -1270,6 +1405,10 @@ export function App() {
             ...workflow.handoff,
             sow: sowHandoff,
           },
+          supplements: {
+            ...workflow.supplements,
+            sow: sowSupplement,
+          },
           resourceInputs: sowHandoff ? mergeResourceInputsFromSowHandoff(sowHandoff, workflow.resourceInputs) : workflow.resourceInputs,
         });
       });
@@ -1286,7 +1425,7 @@ export function App() {
         status: "success",
         createdAt,
         completedAt: new Date().toISOString(),
-        inputSnapshot: { fileName, rawChars: trimmed.length },
+        inputSnapshot: { fileName, rawChars: trimmed.length, supplementChars: sowSupplement.length },
         outputContent: result.content,
       });
       notify("AI 已解析 SOW，并生成标准化输入源。", "success");
@@ -1305,7 +1444,7 @@ export function App() {
         status: "failed",
         createdAt,
         completedAt: new Date().toISOString(),
-        inputSnapshot: { fileName, rawChars: trimmed.length },
+        inputSnapshot: { fileName, rawChars: trimmed.length, supplementChars: sowSupplement.length },
         errorMessage: message,
       });
       notify(`SOW 标准化失败：${message}`, "danger");
@@ -1317,10 +1456,11 @@ export function App() {
 
   const generateWorkflowDraft = async (kind: DeliveryDraftKind, workflowOverride?: DeliveryWorkflow) => {
     if (!state) return;
-    const project = getProject(state);
-    const workflow = workflowOverride || getWorkflow(state, project.id);
+    const workflow = workflowOverride || getAiGenerationWorkflow(state);
+    const project = buildAiGenerationProjectContext(workflow, state, workflow.projectId);
     const config = defaultModelConfig(state.aiModelConfigs);
     const canUseHardwareKernel = kind === "hardware" && canRunHardwareSkillKernel(workflow);
+    const currentSupplement = workflow.supplements[kind] || "";
     if (!config && !canUseHardwareKernel) {
       notify("请先在设置页的模型设置中创建默认模型配置。", "warning");
       return;
@@ -1336,6 +1476,7 @@ export function App() {
       personDayChars: workflow.personDayAssessment.content.length,
       hardwareChars: workflow.hardwareAssessment.content.length,
       wbsChars: workflow.wbsPlan.content.length,
+      supplementChars: currentSupplement.length,
     });
     if (workflowOverride) {
       setState((current) => (current ? upsertWorkflow(current, workflowOverride) : current));
@@ -1345,7 +1486,7 @@ export function App() {
     const createdAt = new Date().toISOString();
     void recordAiGenerationRun({
       id: runId,
-      projectId: project.id,
+      projectId: workflow.projectId,
       kind,
       model: config?.model || "skill-kernel",
       status: "running",
@@ -1355,6 +1496,7 @@ export function App() {
         personDayChars: workflow.personDayAssessment.content.length,
         hardwareChars: workflow.hardwareAssessment.content.length,
         wbsChars: workflow.wbsPlan.content.length,
+        supplementChars: currentSupplement.length,
         resourceInputs: workflow.resourceInputs,
       },
     });
@@ -1369,7 +1511,7 @@ export function App() {
         lastDraftFlush = now;
         setState((current) => {
           if (!current) return current;
-          const currentWorkflow = getWorkflow(current, project.id);
+          const currentWorkflow = getWorkflow(current, workflow.projectId);
           return upsertWorkflow(current, updateDraft(currentWorkflow, draftKey, content, model));
         });
       };
@@ -1386,12 +1528,12 @@ export function App() {
       });
       setState((current) => {
         if (!current) return current;
-        const currentWorkflow = getWorkflow(current, project.id);
+        const currentWorkflow = getWorkflow(current, workflow.projectId);
         return upsertWorkflow(current, updateDraft(currentWorkflow, draftKey, draft.content, draft.model));
       });
       void recordAiGenerationRun({
         id: runId,
-        projectId: project.id,
+        projectId: workflow.projectId,
         kind,
         model: draft.model,
         status: "success",
@@ -1399,6 +1541,7 @@ export function App() {
         completedAt: new Date().toISOString(),
         inputSnapshot: {
           sowChars: workflow.sow.content.length,
+          supplementChars: currentSupplement.length,
           resourceInputs: workflow.resourceInputs,
         },
         outputContent: draft.content,
@@ -1413,7 +1556,7 @@ export function App() {
       });
       void recordAiGenerationRun({
         id: runId,
-        projectId: project.id,
+        projectId: workflow.projectId,
         kind,
         model: config?.model || "skill-kernel",
         status: "failed",
@@ -1421,6 +1564,7 @@ export function App() {
         completedAt: new Date().toISOString(),
         inputSnapshot: {
           sowChars: workflow.sow.content.length,
+          supplementChars: currentSupplement.length,
           resourceInputs: workflow.resourceInputs,
         },
         errorMessage: message,
@@ -1432,39 +1576,41 @@ export function App() {
   };
 
   const confirmCurrentProjectFlow = (workflowOverride?: DeliveryWorkflow) => {
-    const project = getProject(state);
-    const workflow = workflowOverride || getWorkflow(state, project.id);
+    const workflow = workflowOverride || getAiGenerationWorkflow(state);
     if (!workflow.wbsPlan.content.trim()) {
-      notify("请先生成并保存 WBS / 实施计划草稿，再确认生成项目执行流。", "warning");
+      notify("请先生成并保存 WBS / 实施计划草稿，再创建项目执行流。", "warning");
       return;
     }
     const flowSummary = summarizeWbsPlanDraft(workflow.wbsPlan.content);
     if (!flowSummary.taskCount) {
-      notify("当前 WBS / 计划草稿没有可识别的计划表行，不能生成项目执行流。请重新生成或补齐标准计划表。", "warning");
+      notify("当前 WBS / 计划草稿没有可识别的计划表行，不能创建项目。请重新生成或补齐标准计划表。", "warning");
       return;
     }
+    const previewState = workflowOverride ? upsertWorkflow(state, workflowOverride) : state;
+    const { state: previewCreatedState, projectId: previewProjectId } = confirmAiGenerationWorkflowAsNewProject(previewState, getWorkflow(previewState, workflow.projectId));
+    const project = previewCreatedState.projects.find((item) => item.id === previewProjectId) || buildAiGenerationProjectContext(workflow, state, workflow.projectId);
     requestConfirm({
-      title: "确认生成项目执行流",
+      title: "确认创建新项目",
       description:
-        `系统将基于当前 WBS / 计划创建 ${flowSummary.taskCount} 个正式任务和 ${flowSummary.deliverableCount} 个交付物。生成后会进入当前项目的「任务跟踪」。若此前已生成过，将替换上一批由 AI 草稿转入的任务和交付物。`,
-      confirmText: "生成项目执行流",
+        `系统将新建「${project.name}」，并基于当前 WBS / 计划创建 ${flowSummary.taskCount} 个正式任务和 ${flowSummary.deliverableCount} 个交付物。AI 生成中心的草稿会保留在独立工作区，不会写入或覆盖当前项目。`,
+      confirmText: "创建新项目",
       tone: "primary",
       onConfirm: () => {
         setState((current) => {
           if (!current) return current;
           const baseState = workflowOverride ? upsertWorkflow(current, workflowOverride) : current;
-          const nextState = confirmProjectFlow(baseState, project.id);
+          const { state: nextState, projectId } = confirmAiGenerationWorkflowAsNewProject(baseState, getWorkflow(baseState, workflow.projectId));
           return {
             ...nextState,
             ui: {
               ...nextState.ui,
-              currentProjectId: project.id,
+              currentProjectId: projectId,
               currentPage: "list",
               search: "",
             },
           };
         });
-        notify(`项目执行流已生成：${flowSummary.taskCount} 个任务，${flowSummary.deliverableCount} 个交付物。`);
+        notify(`新项目已创建：${flowSummary.taskCount} 个任务，${flowSummary.deliverableCount} 个交付物。`);
       },
     });
   };
@@ -1480,6 +1626,8 @@ export function App() {
             onImportProject={importDataWithPreview}
             onEditProject={(project) => setDialog({ kind: "project", item: project })}
             onDeleteProject={deleteProject}
+            onArchiveProject={archiveProject}
+            onRestoreProject={restoreProject}
             aiService={aiService}
           />
         );
@@ -1531,6 +1679,8 @@ export function App() {
             onSaveDeliverable={updateDeliverable}
             onSaveDeliverableStoragePath={saveDeliverableStoragePath}
             onDeleteDeliverable={deleteDeliverable}
+            onBatchUpdateDeliverables={updateDeliverablesBatch}
+            onBatchDeleteDeliverables={deleteDeliverablesBatch}
           />
         );
       case "risks":
@@ -1583,7 +1733,7 @@ export function App() {
         return (
           <WbsPlanPage
             state={state}
-            onGenerate={() => generateWorkflowDraft("wbs")}
+            onGenerate={(workflow) => generateWorkflowDraft("wbs", workflow)}
             onSaveDraft={saveWorkflow}
             onConfirmFlow={confirmCurrentProjectFlow}
             generating={generatingWorkflow === "wbs"}
@@ -1595,7 +1745,7 @@ export function App() {
         return (
           <ImplementationPlanPage
             state={state}
-            onGenerate={() => generateWorkflowDraft("implementation")}
+            onGenerate={(workflow) => generateWorkflowDraft("implementation", workflow)}
             onSaveDraft={saveWorkflow}
             generating={generatingWorkflow === "implementation"}
             onPage={setPage}
@@ -1628,6 +1778,8 @@ export function App() {
             onImportProject={importDataWithPreview}
             onEditProject={(project) => setDialog({ kind: "project", item: project })}
             onDeleteProject={deleteProject}
+            onArchiveProject={archiveProject}
+            onRestoreProject={restoreProject}
             aiService={aiService}
           />
         );

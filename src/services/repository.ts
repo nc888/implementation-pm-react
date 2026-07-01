@@ -32,6 +32,7 @@ import type {
   WeeklyReportPreference,
   WeeklyReportPreferenceInput,
   WorkflowHandoffContent,
+  WorkflowSupplementContent,
 } from "../types";
 
 const AICODEMIRROR_GPT55_URL = "https://api.aicodemirror.com/api/codex/v1/chat/completions";
@@ -118,7 +119,7 @@ export function migrateAppState(data: Partial<AppState>): AppState {
     weeklyReportPreferences,
     emailConfig,
     deliveryWorkflows,
-    schemaVersion: 18,
+    schemaVersion: 19,
   };
 }
 
@@ -143,9 +144,13 @@ function normalizeProjectStageConfigs(configs: unknown, projects: Project[], fal
 function migrateProject(project: Project, sourceSchemaVersion: number, taskStages: TaskStageDefinition[]): Project {
   const fallback = defaultData.projects.find((item) => item.id === project.id);
   const shouldBackfillPersonDays = sourceSchemaVersion < 6;
+  const status = project.status === "archived" ? "archived" : "active";
   return {
     ...project,
     phase: normalizeProjectPhase(project.phase || fallback?.phase, taskStages),
+    status,
+    archivedAt: status === "archived" ? project.archivedAt || "" : "",
+    archiveReason: status === "archived" ? project.archiveReason || "" : "",
     estimatedImplementationPersonDays: Number(
       shouldBackfillPersonDays && !project.estimatedImplementationPersonDays
         ? fallback?.estimatedImplementationPersonDays ?? 0
@@ -560,6 +565,16 @@ function emptyHandoff(): WorkflowHandoffContent {
   };
 }
 
+function emptySupplements(): WorkflowSupplementContent {
+  return {
+    sow: "",
+    personDay: "",
+    hardware: "",
+    wbs: "",
+    implementation: "",
+  };
+}
+
 function migrateWorkflow(workflow: DeliveryWorkflow & { resourceAssessment?: AiDraft }): DeliveryWorkflow {
   return {
     ...workflow,
@@ -570,6 +585,10 @@ function migrateWorkflow(workflow: DeliveryWorkflow & { resourceAssessment?: AiD
     handoff: {
       ...emptyHandoff(),
       ...(workflow.handoff || {}),
+    },
+    supplements: {
+      ...emptySupplements(),
+      ...(workflow.supplements || {}),
     },
     personDayAssessment: workflow.personDayAssessment || workflow.resourceAssessment || emptyDraft(),
     hardwareAssessment: workflow.hardwareAssessment || emptyDraft(),

@@ -27,10 +27,9 @@ import {
   Workflow,
 } from "lucide-react";
 import type { AppState, DeliveryWorkflow, PageKey, ResourceAssessmentInputs, SowInput } from "../types";
-import { getProject } from "../services/contextBuilder";
 import {
   extractSowHandoffContent as extractWorkflowSowHandoffContent,
-  getWorkflow,
+  getAiGenerationWorkflow,
   replaceSowHandoffContent as replaceWorkflowSowHandoffContent,
 } from "../services/deliveryWorkflowService";
 import { Badge, Button, Card } from "../components/ui";
@@ -92,6 +91,16 @@ function limitedExcelLines(lines: string[], maxLines: number, label: string) {
   return [...lines.slice(0, maxLines), `...（${label} 已截断：共 ${lines.length} 行，仅发送前 ${maxLines} 行以提升AI解析速度）`].join("\n");
 }
 
+function isCountLike(value: string) {
+  return /^\d+(?:\.\d+)?\+?$/.test(value.trim());
+}
+
+function sourceCountCell(cells: Array<{ address: string; value: string }>, sequenceIndex: number) {
+  const columnNCell = cells.find((cell) => cell.address.replace(/\d+$/, "") === "N");
+  if (columnNCell) return isCountLike(columnNCell.value) ? columnNCell : undefined;
+  return cells.find((cell, index) => index > sequenceIndex && isCountLike(cell.value));
+}
+
 function sheetToSowText(sheetName: string, sheet: XLSX.WorkSheet) {
   const rangeRef = sheet["!ref"];
   if (!rangeRef) return `# Sheet: ${sheetName}\n未读取到有效单元格`;
@@ -100,6 +109,7 @@ function sheetToSowText(sheetName: string, sheet: XLSX.WorkSheet) {
   const rowLines: string[] = [];
   const fieldLines: string[] = [];
   const tableLines: string[] = [];
+  const dataSourceRows: Array<{ row: number; category: string; source: string; count: string; note: string }> = [];
 
   for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
     const cells: Array<{ address: string; value: string; columnIndex: number }> = [];
@@ -113,6 +123,22 @@ function sheetToSowText(sheetName: string, sheet: XLSX.WorkSheet) {
     rowLines.push(`R${rowIndex + 1}: ${cells.map((cell) => `${cell.address}=${cell.value}`).join(" | ")}`);
     tableLines.push(cells.map((cell) => cell.value).join("\t"));
 
+    const sequenceIndex = cells.findIndex((cell) => /^\d{1,3}$/.test(cell.value));
+    const countCell = sequenceIndex >= 0 ? sourceCountCell(cells, sequenceIndex) : undefined;
+    const sequenceNumber = sequenceIndex >= 0 ? Number(cells[sequenceIndex].value) : 0;
+    if (sequenceIndex >= 0 && Number.isFinite(sequenceNumber) && sequenceNumber >= 1 && sequenceNumber <= 300 && countCell && rowIndex + 1 >= 35) {
+      const values = cells.slice(sequenceIndex + 1).map((cell) => cell.value);
+      const knownCategories = ["操作系统", "中间件", "数据库", "交换机", "防火墙", "负载均衡", "堡垒机", "业务系统", "青藤云", "zabbix"];
+      const category = values.find((value) => knownCategories.some((item) => value.includes(item))) || "其他";
+      const note = cells[cells.length - 1]?.value || "";
+      const sourceCandidates = values
+        .filter((value) => value !== category && value !== note)
+        .filter((value) => !isCountLike(value) && !/^\d{1,3}$/.test(value))
+        .filter((value, index, array) => array.indexOf(value) === index);
+      const source = sourceCandidates[sourceCandidates.length - 1] || category;
+      dataSourceRows.push({ row: rowIndex + 1, category, source, count: countCell.value, note });
+    }
+
     for (let index = 0; index < cells.length - 1; index += 1) {
       const current = cells[index];
       const next = cells[index + 1];
@@ -122,14 +148,29 @@ function sheetToSowText(sheetName: string, sheet: XLSX.WorkSheet) {
     }
   }
 
+  const sourceTotals = dataSourceRows.reduce<Record<string, { count: number; items: number }>>((totals, item) => {
+    const current = totals[item.category] || { count: 0, items: 0 };
+    const count = Number(item.count.match(/\d+(?:\.\d+)?/)?.[0] || 0);
+    totals[item.category] = { count: current.count + count, items: current.items + 1 };
+    return totals;
+  }, {});
+  const sourceSummaryLines = Object.entries(sourceTotals)
+    .sort(([, a], [, b]) => b.count - a.count)
+    .map(([category, summary]) => `${category}\t${summary.items}项\t${summary.count}`);
+  const sourceDetailLines = dataSourceRows.map((item) => `R${item.row}\t${item.category}\t${item.source}\t${item.count}\t${item.note}`);
+
   const parts = [
     `# Sheet: ${sheetName}`,
     "## 关键字段邻近值",
     fieldLines.length ? Array.from(new Set(fieldLines)).join("\n") : "未识别到行内键值对",
+    "## 数据接入分类汇总（本地抽取）",
+    sourceSummaryLines.length ? ["类别\t明细项\t数量合计", ...sourceSummaryLines].join("\n") : "未识别到数据接入明细",
+    "## 数据接入明细（本地抽取）",
+    sourceDetailLines.length ? ["行号\t类别\t日志源/设备类型\t设备数量\t说明", ...sourceDetailLines].join("\n") : "未识别到数据接入明细",
     "## 非空单元格坐标",
     rowLines.join("\n"),
     "## 表格行文本（预览）",
-    limitedExcelLines(tableLines, 120, "表格行文本"),
+    limitedExcelLines(tableLines, 260, "表格行文本"),
   ];
 
   return parts.join("\n");
@@ -298,7 +339,7 @@ function WorkflowStepBar({
           );
         })}
       </nav>
-      <button type="button" className="workflow-reset-button" onClick={onResetWorkflow} aria-label="重置AI生成步骤内容" title="清空当前项目的AI生成步骤内容">
+      <button type="button" className="workflow-reset-button" onClick={onResetWorkflow} aria-label="重置AI生成步骤内容" title="清空AI生成中心的独立草稿内容">
         <RotateCcw aria-hidden="true" />
         <span>重置</span>
       </button>
@@ -381,7 +422,7 @@ function WorkflowContextPanel({
     sow: "先保证输入源完整。保存后的 SOW 会作为后续评估、WBS 和方案生成的唯一基础。",
     personDay: "当前步骤只处理人天测算。硬件资源测算已拆到下一步，页面会更聚焦。",
     hardware: "当前步骤只处理硬件资源测算，结果会进入实施方案第八章和 WBS 资源准备任务。",
-    wbs: "WBS 草稿确认前不会写入正式任务。确认后会生成项目执行流，并同步到事项、甘特和交付物。",
+    wbs: "WBS 草稿确认前不会写入正式任务。确认后会新建项目，并同步任务、甘特、交付物和里程碑。",
     plan: "实施方案承接前面所有人工修订后的草稿，适合作为交付方案初稿继续编辑。",
   }[active];
   return (
@@ -790,6 +831,81 @@ function WorkflowHandoffEditor({
   );
 }
 
+function WorkflowSupplementEditor({
+  title,
+  description,
+  editorId,
+  resetKey,
+  value,
+  placeholder,
+  onSave,
+}: {
+  title: string;
+  description: string;
+  editorId: string;
+  resetKey: string;
+  value: string;
+  placeholder: string;
+  onSave: (content: string) => void;
+}) {
+  const [zoomOpen, setZoomOpen] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const ready = hasContent(draft);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [resetKey, value]);
+
+  const saveCurrent = () => {
+    onSave(draft);
+  };
+
+  return (
+    <section className="workflow-supplement-panel" aria-label={title}>
+      <div className="workflow-supplement-head">
+        <div className="workflow-supplement-copy">
+          <strong>{title}</strong>
+          <span>{description}</span>
+        </div>
+        <div className="workflow-result-actions">
+          <Badge tone={ready ? "primary" : "warning"}>{ready ? "已补充" : "可选"}</Badge>
+          <Button tone="ghost" onClick={saveCurrent}>
+            <Save aria-hidden={true} />
+            保存
+          </Button>
+          <WorkflowZoomButton
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setZoomOpen(true);
+            }}
+          />
+        </div>
+      </div>
+      <textarea
+        key={resetKey}
+        id={editorId}
+        className="workflow-supplement-textarea"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        placeholder={placeholder}
+        spellCheck={false}
+        aria-label={`${title}，生成前补充信息`}
+      />
+      <WorkflowTextareaZoomEditor
+        title={title}
+        editorId={editorId}
+        open={zoomOpen}
+        onClose={() => setZoomOpen(false)}
+        onSave={(content) => {
+          setDraft(content);
+          onSave(content);
+        }}
+      />
+    </section>
+  );
+}
+
 function WorkflowDraftEditor({
   id,
   resetKey,
@@ -994,36 +1110,38 @@ export function SowPage({
   onResetWorkflow,
 }: {
   state: AppState;
-  onSaveSow: (sow: SowInput, handoffContent?: string) => void;
-  onStandardizeSow: (input: { projectId: string; fileName: string; rawContent: string }) => void;
+  onSaveSow: (sow: SowInput, handoffContent?: string, supplementContent?: string) => void;
+  onStandardizeSow: (input: { projectId: string; fileName: string; rawContent: string; supplementalInfo?: string }) => void;
   standardizing: boolean;
   onPage: (page: PageKey) => void;
   onResetWorkflow: () => void;
 }) {
-  const project = getProject(state);
-  const workflow = getWorkflow(state, project.id);
+  const workflow = getAiGenerationWorkflow(state);
   const [sowZoomOpen, setSowZoomOpen] = useState(false);
   const [sowHandoffZoomOpen, setSowHandoffZoomOpen] = useState(false);
   const sowHandoffContent = workflow.handoff.sow || extractWorkflowSowHandoffContent(workflow.sow.content);
 
-  const save = (content?: string, fileName?: string, handoffContent?: string) => {
+  const currentSowSupplement = () => readDraftValue("sowSupplement", workflow.supplements.sow).trim();
+
+  const save = (content?: string, fileName?: string, handoffContent?: string, supplementContent = currentSowSupplement()) => {
     const input = document.querySelector("#sowContent") as HTMLTextAreaElement | null;
     const nextContent = content ?? input?.value ?? workflow.sow.content;
     const nextHandoff = handoffContent ?? readDraftValue("sowHandoffContent", workflow.handoff.sow || extractWorkflowSowHandoffContent(nextContent));
     onSaveSow({
-      projectId: project.id,
+      projectId: workflow.projectId,
       content: nextContent,
       fileName: fileName ?? workflow.sow.fileName,
       updatedAt: new Date().toISOString(),
-    }, nextHandoff);
+    }, nextHandoff, supplementContent);
   };
 
   const standardizeFromEditor = () => {
     const input = document.querySelector("#sowContent") as HTMLTextAreaElement | null;
     onStandardizeSow({
-      projectId: project.id,
+      projectId: workflow.projectId,
       fileName: workflow.sow.fileName || "手工粘贴",
       rawContent: input?.value ?? workflow.sow.content,
+      supplementalInfo: currentSowSupplement(),
     });
   };
 
@@ -1090,6 +1208,15 @@ export function SowPage({
             </Badge>
           }
         />
+        <WorkflowSupplementEditor
+          title="生成前补充信息"
+          description="补充客户口径、缺失字段或需要 AI 优先采纳的判断，生成标准 SOW 时会一起传入。"
+          editorId="sowSupplement"
+          resetKey={`${workflow.projectId}:sow-supplement:${workflow.supplements.sow}`}
+          value={workflow.supplements.sow}
+          placeholder="例如：客户简称、项目边界、SOW 表格里的空值解释、需要按某个 Sheet 为准等。"
+          onSave={(content) => save(undefined, undefined, undefined, content)}
+        />
         <div className="field">
           <label className={`workflow-upload-zone ${standardizing ? "loading" : ""}`}>
             {standardizing ? <LoaderCircle aria-hidden={true} /> : <Upload aria-hidden={true} />}
@@ -1116,9 +1243,10 @@ export function SowPage({
                     chars: text.length,
                   });
                   onStandardizeSow({
-                    projectId: project.id,
+                    projectId: workflow.projectId,
                     fileName: file.name,
                     rawContent: text,
+                    supplementalInfo: currentSowSupplement(),
                   });
                 } catch (error) {
                   console.error("[SOW导入] 文件读取失败", {
@@ -1249,8 +1377,8 @@ export function SowPage({
             />
           </section>
         ) : null}
-        <WorkflowDraftEditor id="sowContent" resetKey={`${project.id}:${workflow.sow.updatedAt}`} value={workflow.sow.content} placeholder="" />
-        <WorkflowDraftEditor id="sowHandoffContent" resetKey={`${project.id}:${workflow.sow.updatedAt}:handoff`} value={sowHandoffContent} placeholder="" />
+        <WorkflowDraftEditor id="sowContent" resetKey={`${workflow.projectId}:${workflow.sow.updatedAt}`} value={workflow.sow.content} placeholder="" />
+        <WorkflowDraftEditor id="sowHandoffContent" resetKey={`${workflow.projectId}:${workflow.sow.updatedAt}:handoff`} value={sowHandoffContent} placeholder="" />
         <div className="actions-row workflow-actions-row">
           <Button tone="primary" onClick={standardizeFromEditor} disabled={standardizing}>
             {standardizing ? <LoaderCircle aria-hidden={true} /> : <Sparkles aria-hidden={true} />}
@@ -1292,8 +1420,7 @@ export function ResourceAssessmentPage({
   onPage: (page: PageKey) => void;
   onResetWorkflow: () => void;
 }) {
-  const project = getProject(state);
-  const workflow = getWorkflow(state, project.id);
+  const workflow = getAiGenerationWorkflow(state);
   const [resourceInputs, setResourceInputs] = useState<ResourceAssessmentInputs>(() => normalizeResourceInputs(workflow.resourceInputs));
 
   useEffect(() => {
@@ -1320,6 +1447,10 @@ export function ResourceAssessmentPage({
   const workflowWithCurrentResourceInputs = () => ({
     ...workflow,
     resourceInputs,
+    supplements: {
+      ...workflow.supplements,
+      personDay: "",
+    },
   });
   const saveResourceInputs = () => {
     onSaveDraft(workflowWithCurrentResourceInputs());
@@ -1491,13 +1622,13 @@ export function ResourceAssessmentPage({
           title="准备传入 WBS/实施计划的信息"
           content={workflow.handoff.personDay}
           editorId="personDayHandoff"
-          resetKey={`${project.id}:${workflow.personDayAssessment.generatedAt}:${workflow.personDayAssessment.status}:handoff:${workflow.handoff.personDay}`}
+          resetKey={`${workflow.projectId}:${workflow.personDayAssessment.generatedAt}:${workflow.personDayAssessment.status}:handoff:${workflow.handoff.personDay}`}
           emptyText="人天评估生成后会自动提取结构化摘要，也可以在这里手工补充总人天口径、阶段工时和待确认项。"
           onSave={savePersonDayHandoff}
         />
         <WorkflowDraftEditor
           id="personDayDraft"
-          resetKey={`${project.id}:${workflow.personDayAssessment.generatedAt}:${workflow.personDayAssessment.status}`}
+          resetKey={`${workflow.projectId}:${workflow.personDayAssessment.generatedAt}:${workflow.personDayAssessment.status}`}
           value={workflow.personDayAssessment.content}
           placeholder="点击评估人天后生成，可人工修改。"
         />
@@ -1521,8 +1652,7 @@ export function HardwareAssessmentPage({
   onPage: (page: PageKey) => void;
   onResetWorkflow: () => void;
 }) {
-  const project = getProject(state);
-  const workflow = getWorkflow(state, project.id);
+  const workflow = getAiGenerationWorkflow(state);
   const [resourceInputs, setResourceInputs] = useState<ResourceAssessmentInputs>(() => normalizeResourceInputs(workflow.resourceInputs));
 
   useEffect(() => {
@@ -1548,6 +1678,10 @@ export function HardwareAssessmentPage({
   const workflowWithCurrentResourceInputs = () => ({
     ...workflow,
     resourceInputs,
+    supplements: {
+      ...workflow.supplements,
+      hardware: "",
+    },
   });
   const saveResourceInputs = () => {
     onSaveDraft(workflowWithCurrentResourceInputs());
@@ -1762,13 +1896,13 @@ export function HardwareAssessmentPage({
           title="准备传入实施方案第八章的信息"
           content={workflow.handoff.hardware}
           editorId="hardwareHandoff"
-          resetKey={`${project.id}:${workflow.hardwareAssessment.generatedAt}:${workflow.hardwareAssessment.status}:handoff:${workflow.handoff.hardware}`}
+          resetKey={`${workflow.projectId}:${workflow.hardwareAssessment.generatedAt}:${workflow.hardwareAssessment.status}:handoff:${workflow.handoff.hardware}`}
           emptyText="硬件评估生成后会自动提取第八章结构化摘要，也可以在这里手工补充部署模式、推荐方案、容量口径和校验结论。"
           onSave={saveHardwareHandoff}
         />
         <WorkflowDraftEditor
           id="hardwareDraft"
-          resetKey={`${project.id}:${workflow.hardwareAssessment.generatedAt}:${workflow.hardwareAssessment.status}`}
+          resetKey={`${workflow.projectId}:${workflow.hardwareAssessment.generatedAt}:${workflow.hardwareAssessment.status}`}
           value={workflow.hardwareAssessment.content}
           placeholder="点击评估硬件后生成，可人工修改。"
         />
@@ -1787,21 +1921,25 @@ export function WbsPlanPage({
   onResetWorkflow,
 }: {
   state: AppState;
-  onGenerate: () => void;
+  onGenerate: (workflow: DeliveryWorkflow) => void;
   onSaveDraft: (workflow: DeliveryWorkflow) => void;
   onConfirmFlow: (workflow: DeliveryWorkflow) => void;
   generating: boolean;
   onPage: (page: PageKey) => void;
   onResetWorkflow: () => void;
 }) {
-  const project = getProject(state);
-  const workflow = getWorkflow(state, project.id);
+  const workflow = getAiGenerationWorkflow(state);
   const flowConfirmed = workflow.projectFlow.status === "confirmed";
+  const currentWbsSupplement = () => readDraftValue("wbsSupplement", workflow.supplements.wbs).trim();
   const workflowWithCurrentWbs = (content = readDraftValue("wbsPlanDraft", workflow.wbsPlan.content)) => ({
       ...workflow,
       handoff: {
         ...workflow.handoff,
         wbs: readDraftValue("wbsHandoff", workflow.handoff.wbs).trim(),
+      },
+      supplements: {
+        ...workflow.supplements,
+        wbs: currentWbsSupplement(),
       },
       wbsPlan: { ...workflow.wbsPlan, content, status: "edited" as const },
   });
@@ -1814,6 +1952,10 @@ export function WbsPlanPage({
       handoff: {
         ...workflow.handoff,
         wbs: content.trim(),
+      },
+      supplements: {
+        ...workflow.supplements,
+        wbs: currentWbsSupplement(),
       },
     });
   };
@@ -1842,8 +1984,8 @@ export function WbsPlanPage({
                 ready: hasContent(workflow.hardwareAssessment.content),
               },
               {
-                label: "项目执行流",
-                detail: flowConfirmed ? `已在 ${workflow.projectFlow.confirmedAt.slice(0, 10)} 写入` : "确认后才写入正式任务",
+                label: "新项目",
+                detail: flowConfirmed ? `已在 ${workflow.projectFlow.confirmedAt.slice(0, 10)} 创建` : "确认后新建项目并写入正式任务",
                 ready: flowConfirmed,
               },
             ]}
@@ -1860,12 +2002,29 @@ export function WbsPlanPage({
           description="承接人天评估和硬件资源评估，调用 skill-export 生成 WBS、详细计划表、文本甘特图和里程碑草稿。"
           badge={
             <Badge tone={flowConfirmed ? "success" : hasContent(workflow.wbsPlan.content) ? "warning" : ""}>
-              {flowConfirmed ? "已生成项目流" : hasContent(workflow.wbsPlan.content) ? "草稿待确认" : "未生成"}
+              {flowConfirmed ? "已创建项目" : hasContent(workflow.wbsPlan.content) ? "草稿待确认" : "未生成"}
             </Badge>
           }
         />
+        <WorkflowSupplementEditor
+          title="生成前补充信息"
+          description="补充排期口径、里程碑、角色安排或客户时间约束，生成 WBS 与计划时会优先参考。"
+          editorId="wbsSupplement"
+          resetKey={`${workflow.projectId}:wbs-supplement:${workflow.supplements.wbs}`}
+          value={workflow.supplements.wbs}
+          placeholder="例如：入场时间按 2026-07-01；只按工作日排期；客户每周三评审；试运行阶段保留 10 个工作日。"
+          onSave={(content) =>
+            onSaveDraft({
+              ...workflowWithCurrentWbs(),
+              supplements: {
+                ...workflow.supplements,
+                wbs: content.trim(),
+              },
+            })
+          }
+        />
         <div className="actions-row workflow-actions-row">
-          <Button tone="primary" onClick={onGenerate} disabled={generating}>
+          <Button tone="primary" onClick={() => onGenerate(workflowWithCurrentWbs())} disabled={generating}>
             {generating ? <LoaderCircle aria-hidden={true} /> : <Sparkles aria-hidden={true} />}
             {generating ? "生成中..." : "生成 WBS 与计划"}
           </Button>
@@ -1880,16 +2039,16 @@ export function WbsPlanPage({
           </Button>
           <Button tone="success" onClick={() => onConfirmFlow(workflowWithCurrentWbs())} disabled={!hasContent(workflow.wbsPlan.content) || generating}>
             <ClipboardCheck aria-hidden={true} />
-            确认并生成项目执行流
+            创建新项目
           </Button>
         </div>
         <div className={`handoff-banner ${flowConfirmed ? "confirmed" : ""}`}>
           {flowConfirmed ? <CheckCircle2 aria-hidden={true} /> : <AlertTriangle aria-hidden={true} />}
-          <strong>{flowConfirmed ? "项目执行流已生成" : "AI草稿尚未进入项目执行"}</strong>
+          <strong>{flowConfirmed ? "项目已创建" : "AI草稿尚未创建项目"}</strong>
           <span>
             {flowConfirmed
-              ? `已在 ${workflow.projectFlow.confirmedAt.slice(0, 10)} 转入正式任务和交付物，可在项目执行中继续跟踪。`
-              : "WBS/计划生成后，需要点击“确认并生成项目执行流”，才会写入正式任务、交付物和后续管理视图。"}
+              ? `已在 ${workflow.projectFlow.confirmedAt.slice(0, 10)} 转入正式任务和交付物，可在新项目中继续跟踪。`
+              : "WBS/计划生成后，点击“创建新项目”会新建项目，并写入正式任务、交付物和后续管理视图。"}
           </span>
         </div>
         <WorkflowDraftResult
@@ -1906,13 +2065,13 @@ export function WbsPlanPage({
           title="准备传入实施方案的信息"
           content={workflow.handoff.wbs}
           editorId="wbsHandoff"
-          resetKey={`${project.id}:${workflow.wbsPlan.generatedAt}:${workflow.wbsPlan.status}:handoff:${workflow.handoff.wbs}`}
+          resetKey={`${workflow.projectId}:${workflow.wbsPlan.generatedAt}:${workflow.wbsPlan.status}:handoff:${workflow.handoff.wbs}`}
           emptyText="WBS/计划生成后会自动提取计划摘要，也可以在这里手工补充阶段、里程碑、排期口径和待确认项。"
           onSave={saveWbsHandoff}
         />
         <WorkflowDraftEditor
           id="wbsPlanDraft"
-          resetKey={`${project.id}:${workflow.wbsPlan.generatedAt}:${workflow.wbsPlan.status}`}
+          resetKey={`${workflow.projectId}:${workflow.wbsPlan.generatedAt}:${workflow.wbsPlan.status}`}
           value={workflow.wbsPlan.content}
           placeholder="点击生成后输出，可人工修改。"
         />
@@ -1930,14 +2089,26 @@ export function ImplementationPlanPage({
   onResetWorkflow,
 }: {
   state: AppState;
-  onGenerate: () => void;
+  onGenerate: (workflow: DeliveryWorkflow) => void;
   onSaveDraft: (workflow: DeliveryWorkflow) => void;
   generating: boolean;
   onPage: (page: PageKey) => void;
   onResetWorkflow: () => void;
 }) {
-  const project = getProject(state);
-  const workflow = getWorkflow(state, project.id);
+  const workflow = getAiGenerationWorkflow(state);
+  const workflowWithCurrentImplementation = (content = workflow.implementationPlan.content) => ({
+    ...workflow,
+    supplements: {
+      ...workflow.supplements,
+      implementation: "",
+    },
+    implementationPlan: {
+      ...workflow.implementationPlan,
+      content,
+      status: hasContent(content) ? ("edited" as const) : workflow.implementationPlan.status,
+    },
+  });
+
   return (
     <WorkflowPageFrame
       active="plan"
@@ -1986,17 +2157,14 @@ export function ImplementationPlanPage({
           badge={<Badge tone={hasContent(workflow.implementationPlan.content) ? "success" : ""}>{draftMeta(workflow.implementationPlan)}</Badge>}
         />
         <div className="actions-row workflow-actions-row">
-          <Button tone="primary" onClick={onGenerate} disabled={generating}>
+          <Button tone="primary" onClick={() => onGenerate(workflowWithCurrentImplementation())} disabled={generating}>
             {generating ? <LoaderCircle aria-hidden={true} /> : <Sparkles aria-hidden={true} />}
             {generating ? "生成中..." : "生成实施方案"}
           </Button>
           <Button
             tone="ghost"
             onClick={() => {
-              onSaveDraft({
-                ...workflow,
-                implementationPlan: { ...workflow.implementationPlan, content: buildImplementationPlanFromFields(workflow.implementationPlan.content), status: "edited" },
-              });
+              onSaveDraft(workflowWithCurrentImplementation(buildImplementationPlanFromFields(workflow.implementationPlan.content)));
             }}
             disabled={!hasContent(workflow.implementationPlan.content) || generating}
           >
@@ -2006,13 +2174,10 @@ export function ImplementationPlanPage({
         </div>
         {hasContent(workflow.implementationPlan.content) && !generating ? (
           <ImplementationChapterEditor
-            resetKey={`${project.id}:${workflow.implementationPlan.generatedAt}:${workflow.implementationPlan.status}`}
+            resetKey={`${workflow.projectId}:${workflow.implementationPlan.generatedAt}:${workflow.implementationPlan.status}`}
             content={workflow.implementationPlan.content}
             onSaveContent={(content) => {
-              onSaveDraft({
-                ...workflow,
-                implementationPlan: { ...workflow.implementationPlan, content, status: "edited" },
-              });
+              onSaveDraft(workflowWithCurrentImplementation(content));
             }}
           />
         ) : (

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import type { AiModelConfig, AppState, EmailConfig, PageKey, TaskStageDefinition } from "../types";
 import { defaultTaskStages, stageCoefficientTotal, stageDefinitionsForProject } from "../services/contextBuilder";
+import { activeProjects } from "../services/projectStatus";
 import { Badge, Button } from "../components/ui";
 
 function endpointLabel(baseUrl: string) {
@@ -69,9 +70,11 @@ export function SettingsPage({
   onSaveEmailConfig: (config: EmailConfig) => void;
 }) {
   const defaultConfig = state.aiModelConfigs.find((item) => item.isDefault) || state.aiModelConfigs[0];
+  const stageProjects = activeProjects(state);
+  const defaultStageProjectId = stageProjects.find((project) => project.id === state.ui.currentProjectId)?.id || stageProjects[0]?.id || state.projects[0]?.id || "";
   const [selectedConfigId, setSelectedConfigId] = useState(defaultConfig.id);
   const selectedConfig = state.aiModelConfigs.find((item) => item.id === selectedConfigId) || defaultConfig;
-  const [selectedStageProjectId, setSelectedStageProjectId] = useState(state.ui.currentProjectId || state.projects[0]?.id || "");
+  const [selectedStageProjectId, setSelectedStageProjectId] = useState(defaultStageProjectId);
   const [draft, setDraft] = useState<AiModelConfig>(selectedConfig);
   const [stageDrafts, setStageDrafts] = useState<TaskStageDefinition[]>(stageDefinitionsForProject(state, selectedStageProjectId).map((stage) => ({ ...stage })));
   const [emailDraft, setEmailDraft] = useState<EmailConfig>(state.emailConfig);
@@ -91,9 +94,9 @@ export function SettingsPage({
   }, [selectedConfig]);
 
   useEffect(() => {
-    if (state.projects.some((project) => project.id === selectedStageProjectId)) return;
-    setSelectedStageProjectId(state.ui.currentProjectId || state.projects[0]?.id || "");
-  }, [selectedStageProjectId, state.projects, state.ui.currentProjectId]);
+    if (stageProjects.some((project) => project.id === selectedStageProjectId)) return;
+    setSelectedStageProjectId(defaultStageProjectId);
+  }, [defaultStageProjectId, selectedStageProjectId, stageProjects]);
 
   useEffect(() => {
     setStageDrafts(stageDefinitionsForProject(state, selectedStageProjectId).map((stage) => ({ ...stage })));
@@ -182,7 +185,7 @@ export function SettingsPage({
 
   const readyModelCount = state.aiModelConfigs.filter((item) => item.provider === "ollama" || item.apiKey.trim()).length;
   const emailReady = Boolean(emailDraft.email.trim() && emailDraft.password.trim() && emailDraft.smtpHost.trim() && emailDraft.imapHost.trim());
-  const selectedStageProject = state.projects.find((project) => project.id === selectedStageProjectId) || state.projects[0];
+  const selectedStageProject = stageProjects.find((project) => project.id === selectedStageProjectId) || stageProjects[0] || state.projects[0];
   const coefficientTotal = stageCoefficientTotal(stageDrafts);
   const coefficientTarget = stageDrafts.length;
   const coefficientValid = coefficientTotal === coefficientTarget;
@@ -388,7 +391,7 @@ export function SettingsPage({
             <div className="field model-field-wide">
               <label>选择项目</label>
               <select value={selectedStageProjectId} onChange={(event) => setSelectedStageProjectId(event.target.value)}>
-                {state.projects.map((project) => (
+                {stageProjects.map((project) => (
                   <option key={project.id} value={project.id}>
                     {project.name} / {project.client}
                   </option>

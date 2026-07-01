@@ -10,6 +10,7 @@ config/ai-model-config.json
 data/
 
 output/*
+output-*
 !output/
 !output/tauri-macos.conf.json
 !output/tauri-msi-icon.conf.json

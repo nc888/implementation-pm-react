@@ -8,12 +8,16 @@ import type {
   TaskStage,
   TaskStatus,
   WorkflowHandoffContent,
+  WorkflowSupplementContent,
 } from "../types";
 import { createProjectStageConfig, formatProjectMilestoneOption, normalizeProjectMilestones, normalizeTaskStage, stageDefinitionsForProject } from "./contextBuilder";
 import { callConfiguredModel, callConfiguredModelStreaming, type ModelStreamDeltaHandler } from "./modelGateway";
+import { nextProjectName, normalizeProjectNameForUniqueness } from "./projectImport";
 
 export type DeliveryDraftKind = "personDay" | "hardware" | "wbs" | "implementation";
 export type DeliveryDraftKey = "personDayAssessment" | "hardwareAssessment" | "wbsPlan" | "implementationPlan";
+
+export const AI_GENERATION_WORKSPACE_ID = "__ai_generation_workspace__";
 
 const now = () => new Date().toISOString();
 
@@ -39,10 +43,25 @@ export const emptyHandoff = (): WorkflowHandoffContent => ({
   wbs: "",
 });
 
+export const emptySupplements = (): WorkflowSupplementContent => ({
+  sow: "",
+  personDay: "",
+  hardware: "",
+  wbs: "",
+  implementation: "",
+});
+
 function normalizeHandoffContent(handoff?: Partial<WorkflowHandoffContent>): WorkflowHandoffContent {
   return {
     ...emptyHandoff(),
     ...(handoff || {}),
+  };
+}
+
+function normalizeSupplementContent(supplements?: Partial<WorkflowSupplementContent>): WorkflowSupplementContent {
+  return {
+    ...emptySupplements(),
+    ...(supplements || {}),
   };
 }
 
@@ -77,6 +96,7 @@ export function emptyWorkflow(projectId: string): DeliveryWorkflow {
     },
     resourceInputs: emptyResourceInputs(),
     handoff: emptyHandoff(),
+    supplements: emptySupplements(),
     personDayAssessment: emptyDraft(),
     hardwareAssessment: emptyDraft(),
     wbsPlan: emptyDraft(),
@@ -89,6 +109,7 @@ export function getWorkflow(state: AppState, projectId: string): DeliveryWorkflo
   const workflow = state.deliveryWorkflows.find((item) => item.projectId === projectId);
   if (!workflow) return emptyWorkflow(projectId);
   const normalizedHandoff = normalizeHandoffContent(workflow.handoff);
+  const normalizedSupplements = normalizeSupplementContent(workflow.supplements);
   const baseWorkflow = {
     ...emptyWorkflow(projectId),
     ...workflow,
@@ -97,6 +118,7 @@ export function getWorkflow(state: AppState, projectId: string): DeliveryWorkflo
       ...(workflow.resourceInputs || {}),
     },
     handoff: normalizedHandoff,
+    supplements: normalizedSupplements,
   };
   const normalizedWorkflow = {
     ...baseWorkflow,
@@ -109,6 +131,65 @@ export function getWorkflow(state: AppState, projectId: string): DeliveryWorkflo
   };
   const project = state.projects.find((item) => item.id === projectId);
   return project ? cleanWorkflowInternalPlaceholders(project, normalizedWorkflow) : normalizedWorkflow;
+}
+
+export function getAiGenerationWorkflow(state: AppState): DeliveryWorkflow {
+  return getWorkflow(state, AI_GENERATION_WORKSPACE_ID);
+}
+
+function usableIdentityValue(value: string | undefined, fallback: string) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed || trimmed === "待确认" || trimmed === "手工粘贴") return fallback;
+  return trimmed;
+}
+
+function numberFromText(value: string) {
+  const match = value.match(/\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+}
+
+function dateRangeFromPlanItems(items: ParsedPlanItem[]) {
+  const dates = items
+    .flatMap((item) => [item.startDate, item.dueDate])
+    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+    .sort();
+  return {
+    startDate: dates[0] || now().slice(0, 10),
+    endDate: dates[dates.length - 1] || "",
+  };
+}
+
+export function buildAiGenerationProjectContext(workflow: DeliveryWorkflow, state?: AppState, projectId = AI_GENERATION_WORKSPACE_ID): Project {
+  const identity = workflow.sow.content ? inferSowIdentity(workflow.sow.fileName, workflow.sow.content) : null;
+  const planItems = planItemsFromDraft(workflow);
+  const dateRange = dateRangeFromPlanItems(planItems);
+  const stages = stageDefinitionsForProject(state, projectId);
+  const firstOpenItem = planItems.find((item) => item.status !== "done") || planItems[0];
+  const phaseStage = firstOpenItem ? stages.find((stage) => stage.id === normalizeTaskStage(firstOpenItem.stage, stages)) : stages[0];
+  const averageProgress = planItems.length ? Math.round(planItems.reduce((sum, item) => sum + item.progress, 0) / planItems.length) : 0;
+  const fileName = workflow.sow.fileName || "";
+
+  return {
+    id: projectId,
+    name: usableIdentityValue(identity?.projectName, fileName ? `${cleanSowFileBaseName(fileName)}实施项目` : "AI生成项目"),
+    client: usableIdentityValue(identity?.clientName, "待确认客户"),
+    phase: phaseStage?.label || "项目启动",
+    health: "关注",
+    owner: "我",
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
+    progress: averageProgress,
+    nextMilestone: "",
+    description: [
+      "由AI生成中心根据独立草稿新建。",
+      fileName ? `SOW来源：${fileName}。` : "",
+      workflow.implementationPlan.content ? "已包含实施方案草稿。" : "",
+    ]
+      .filter(Boolean)
+      .join(""),
+    estimatedImplementationPersonDays: workflow.resourceInputs.hasFixedPersonDays ? numberFromText(workflow.resourceInputs.fixedPersonDays) : 0,
+    estimatedDevelopmentPersonDays: 0,
+  };
 }
 
 export function upsertWorkflow(state: AppState, workflow: DeliveryWorkflow): AppState {
@@ -307,6 +388,8 @@ function stageFromPlan(code: string, type: string, title: string): TaskStage {
 }
 
 function parentCodeOf(code: string) {
+  const singleDecimal = code.match(/^(\d+)\.(\d+)$/);
+  if (singleDecimal) return singleDecimal[2] === "0" ? "" : `${singleDecimal[1]}.0`;
   const dotIndex = code.lastIndexOf(".");
   return dotIndex > 0 ? code.slice(0, dotIndex) : "";
 }
@@ -334,6 +417,56 @@ function dedupePlanItems(items: ParsedPlanItem[]) {
     }
   });
   return Array.from(byCode.values());
+}
+
+function isNonExecutionPlanItem(item: ParsedPlanItem, decimalMainCodes = new Set<string>()) {
+  const title = item.title.trim();
+  const text = `${item.code} ${item.type} ${item.title} ${item.deliverable} ${item.notes}`;
+  const pureStageTitles = [
+    "项目启动",
+    "需求调研",
+    "需求调研与环境确认",
+    "数据接入与部署",
+    "平台部署与数据接入",
+    "场景规则交付",
+    "成果汇报培训",
+    "成果汇报与培训",
+    "上线试运行",
+    "上线试运行/验收",
+    "项目验收",
+  ];
+  if (/阶段|phase/i.test(item.type)) return true;
+  if (/^\d+$/.test(item.code) && decimalMainCodes.has(`${item.code}.0`)) return true;
+  if (/^\d+$/.test(item.code) && pureStageTitles.includes(title) && !/主任务|main/i.test(item.type)) return true;
+  if (/^(本草稿|未提供|显式输入|当前引用|待确认)/.test(title)) return true;
+  if (/^(说明|备注|假设|约束)[:：；;，,、\s]/.test(title)) return true;
+  if (/成果汇报与深度培训/.test(title)) return true;
+  if (
+    /缺失参数|待确认问题|待确认项|节假日清单|客户侧负责人|客户侧资源可用性|网络、账号、日志源配合窗口|单节点磁盘容量|节点数量最终确认|前序硬件建议/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function filterExecutablePlanItems(items: ParsedPlanItem[]) {
+  const decimalMainCodes = new Set(items.filter((item) => /^\d+\.0$/.test(item.code)).map((item) => item.code));
+  return items.filter((item) => !isNonExecutionPlanItem(item, decimalMainCodes));
+}
+
+function normalizeExecutablePlanItemCode(item: ParsedPlanItem): ParsedPlanItem {
+  if (!/^\d+$/.test(item.code)) return item;
+  if (!/主任务|任务|main/i.test(item.type)) return item;
+  return {
+    ...item,
+    code: `${item.code}.0`,
+  };
+}
+
+function normalizeExecutablePlanItems(items: ParsedPlanItem[]) {
+  return dedupePlanItems(filterExecutablePlanItems(items).map(normalizeExecutablePlanItemCode));
 }
 
 function parsePlanItemFromCells(cells: string[], columns: PlanColumnMap): ParsedPlanItem | null {
@@ -380,7 +513,7 @@ function planRowsFromDraft(content: string): ParsedPlanItem[] {
     if (item) items.push(item);
   });
 
-  return dedupePlanItems(items);
+  return normalizeExecutablePlanItems(items);
 }
 
 export function hasValidWbsPlanItems(content: string) {
@@ -510,8 +643,514 @@ export function confirmProjectFlow(state: AppState, projectId: string): AppState
   );
 }
 
+export function confirmAiGenerationWorkflowAsNewProject(state: AppState, sourceWorkflow: DeliveryWorkflow) {
+  const projectId = crypto.randomUUID();
+  const timestamp = now();
+  const projectContext = buildAiGenerationProjectContext(sourceWorkflow, state, projectId);
+  const existingNames = new Set(state.projects.map((item) => normalizeProjectNameForUniqueness(item.name)));
+  const project: Project = {
+    ...projectContext,
+    name: nextProjectName(projectContext.name, existingNames, "AI生成"),
+  };
+  const projectWorkflow: DeliveryWorkflow = {
+    ...sourceWorkflow,
+    projectId,
+    sow: {
+      ...sourceWorkflow.sow,
+      projectId,
+    },
+    projectFlow: emptyProjectFlow(),
+  };
+  const withProject = upsertWorkflow(
+    {
+      ...state,
+      projects: [...state.projects, project],
+      projectStageConfigs: state.projectStageConfigs.some((config) => config.projectId === projectId)
+        ? state.projectStageConfigs
+        : [...state.projectStageConfigs, createProjectStageConfig(projectId, state.taskStages, timestamp, [])],
+    },
+    projectWorkflow,
+  );
+
+  const confirmedState = confirmProjectFlow(withProject, projectId);
+  const confirmedWorkflow = getWorkflow(confirmedState, projectId);
+  return {
+    state: upsertWorkflow(confirmedState, {
+      ...sourceWorkflow,
+      projectFlow: {
+        status: "confirmed",
+        confirmedAt: confirmedWorkflow.projectFlow.confirmedAt,
+        generatedTaskIds: confirmedWorkflow.projectFlow.generatedTaskIds,
+        generatedDeliverableIds: confirmedWorkflow.projectFlow.generatedDeliverableIds,
+        sourceDraftAt: confirmedWorkflow.projectFlow.sourceDraftAt,
+      },
+    }),
+    projectId,
+  };
+}
+
 function workflowSystemPrompt() {
   return `You are a senior software implementation project manager, delivery lead, and solution architect. Use only the structured project facts provided by the user. Do not invent facts that are not present. Output MUST be Simplified Chinese (zh-CN). Do not output Japanese. Do not output English except product names, formulas, and field codes. Return editable Markdown content only, without code fences.`;
+}
+
+function supplementFor(kind: DeliveryDraftKind | "sow", workflow?: Pick<DeliveryWorkflow, "supplements">) {
+  const supplements = normalizeSupplementContent(workflow?.supplements);
+  if (kind === "sow") return supplements.sow.trim();
+  if (kind === "wbs") return supplements.wbs.trim();
+  return "";
+}
+
+function supplementPromptBlock(title: string, content: string) {
+  const normalized = content.trim();
+  if (!normalized) return "";
+  return `\n\n${title}：\n${normalized}`;
+}
+
+type SowSourceEntry = {
+  row: number;
+  category: string;
+  source: string;
+  countText: string;
+  count: number;
+  note: string;
+};
+
+type SowFactPack = {
+  projectName: string;
+  clientName: string;
+  fillDate: string;
+  expectedStartDate: string;
+  signingDate: string;
+  expectedPersonDays: number;
+  licenseCount: number;
+  background: string;
+  objective: string;
+  implementationSuggestion: string;
+  customerFocus: string;
+  customerProfile: string;
+  customerAddress: string;
+  pocTime: string;
+  pocIssues: string;
+  externalRisk: string;
+  internalRisk: string;
+  developmentDemand: string;
+  scenarioDemand: string;
+  notificationDemand: string;
+  trainingDemand: string;
+  customDevelopmentDemand: string;
+  maintenanceDemand: string;
+  sourceEntries: SowSourceEntry[];
+  sourceTotal: number;
+  categoryTotals: Array<{ category: string; count: number; itemCount: number }>;
+  topSources: SowSourceEntry[];
+  hasTraining: boolean;
+  hasCustomDevelopment: boolean;
+  hasBusinessChangeScenario: boolean;
+  hasEnterpriseWechatNotification: boolean;
+  hasDataMigration: boolean;
+};
+
+function stripCoordinatePrefix(value: string) {
+  return value
+    .replace(/^[A-Z]{1,3}\d+\s*=\s*/, "")
+    .replace(/^\d+\s*=\s*/, "")
+    .replace(/\s*[（(][A-Z]{1,3}\d+\s*->\s*[A-Z]{1,3}\d+[）)]\s*$/i, "")
+    .trim();
+}
+
+function cellsFromRawLine(line: string) {
+  if (!line.trim()) return [];
+  const withCoordinates = [...line.matchAll(/[A-Z]{1,3}\d+=([^|]+)/g)].map((match) => stripCoordinatePrefix(match[1])).filter(Boolean);
+  if (withCoordinates.length) return withCoordinates;
+  return line
+    .replace(/^R\d+:\s*/, "")
+    .split(/\t|\|/)
+    .map((cell) => stripCoordinatePrefix(cell).replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function rowsFromRawContent(rawContent: string) {
+  return rawContent
+    .split(/\r?\n/)
+    .map((line) => {
+      const rowMatch = line.match(/^R(\d+):\s*(.+)$/);
+      const cells = cellsFromRawLine(line);
+      return {
+        row: rowMatch ? Number(rowMatch[1]) : 0,
+        raw: line.trim(),
+        cells,
+      };
+    })
+    .filter((row) => row.cells.length);
+}
+
+function cellAfterLabel(cells: string[], labels: string[]) {
+  const normalizedLabels = labels.map((label) => label.replace(/\s+/g, ""));
+  for (let index = 0; index < cells.length; index += 1) {
+    const normalized = cells[index].replace(/\s+/g, "");
+    if (
+      !normalizedLabels.some(
+        (label) => normalized === label || normalized.endsWith(label) || normalized.includes(label) || normalized.includes(`${label}：`) || normalized.includes(`${label}:`),
+      )
+    ) {
+      continue;
+    }
+    const inline = stripCoordinatePrefix(cells[index].match(/[：:]\s*(.+)$/)?.[1] || "");
+    if (inline && !normalizedLabels.includes(inline.replace(/\s+/g, ""))) return inline;
+    const next = stripCoordinatePrefix(cells[index + 1] || "");
+    if (next && !normalizedLabels.includes(next.replace(/\s+/g, ""))) return next;
+  }
+  return "";
+}
+
+function factValue(rawContent: string, labels: string[]) {
+  const rows = rowsFromRawContent(rawContent);
+  for (const row of rows) {
+    const value = cellAfterLabel(row.cells, labels);
+    if (value) return value;
+  }
+  return extractFieldFromRaw(rawContent, labels);
+}
+
+function numberFactValue(rawContent: string, labels: string[]) {
+  const rows = rowsFromRawContent(rawContent);
+  const normalizedLabels = labels.map((label) => label.replace(/\s+/g, ""));
+  for (const row of rows) {
+    const index = row.cells.findIndex((cell) => {
+      const normalized = cell.replace(/\s+/g, "");
+      return normalizedLabels.some((label) => normalized === label || normalized.includes(label));
+    });
+    if (index < 0) continue;
+    for (let cursor = index + 1; cursor < Math.min(row.cells.length, index + 5); cursor += 1) {
+      const candidate = stripCoordinatePrefix(row.cells[cursor]);
+      if (isCountLike(candidate)) return candidate;
+    }
+  }
+  return factValue(rawContent, labels);
+}
+
+function isTemplateTitleValue(value: string) {
+  return /客户需求表|SOW\s*$|v\d+\.\d+|需求表-v/i.test(value.trim());
+}
+
+function usableFactValue(value: string) {
+  const trimmed = value.trim();
+  return trimmed && !isTemplateTitleValue(trimmed) ? trimmed : "";
+}
+
+function parseLooseNumber(value: string) {
+  const match = String(value || "").match(/\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+}
+
+function normalizeDateText(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const ymd = trimmed.match(/(20\d{2})[./-](\d{1,2})[./-](\d{1,2})/);
+  if (ymd) return `${ymd[1]}-${ymd[2].padStart(2, "0")}-${ymd[3].padStart(2, "0")}`;
+  const mdY = trimmed.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (mdY) {
+    const year = mdY[3].length === 2 ? `20${mdY[3]}` : mdY[3];
+    return `${year}-${mdY[1].padStart(2, "0")}-${mdY[2].padStart(2, "0")}`;
+  }
+  return trimmed;
+}
+
+function isSourceSequence(value: string) {
+  return /^\d{1,3}$/.test(value.trim());
+}
+
+function isCountLike(value: string) {
+  return /^\d+(?:\.\d+)?\+?$/.test(value.trim());
+}
+
+function excelColumnValue(raw: string, column: string) {
+  const match = raw.match(new RegExp(`\\b${column}\\d+=([^|]+)`));
+  return match?.[1]?.trim() || "";
+}
+
+function cleanSourceText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function chooseSourceCategory(cells: string[]) {
+  const known = ["操作系统", "中间件", "数据库", "交换机", "防火墙", "负载均衡", "堡垒机", "业务系统", "青藤云", "zabbix"];
+  return cells.find((cell) => known.some((item) => cell.includes(item))) || "";
+}
+
+function chooseSourceName(cells: string[], category: string, note: string) {
+  const ignored = new Set(["数据接入", "日志源", "设备类型", "设备数量", "工时预估（人天）", "沟通", "接入", "分析", category, note]);
+  const candidates = cells
+    .filter((cell) => !ignored.has(cell))
+    .filter((cell) => !isSourceSequence(cell) && !isCountLike(cell))
+    .filter((cell) => cell !== "操作系统已包含业务系统");
+  const deduped = candidates.filter((cell, index) => candidates.indexOf(cell) === index);
+  return deduped[deduped.length - 1] || category || "待确认日志源";
+}
+
+function extractSourceEntries(rawContent: string): SowSourceEntry[] {
+  const excelEntries = rowsFromRawContent(rawContent)
+    .filter((row) => row.row >= 35 && row.row <= 90)
+    .map((row) => {
+      const sequenceIndex = row.cells.findIndex(isSourceSequence);
+      if (sequenceIndex < 0) return null;
+      const sequence = row.cells[sequenceIndex];
+      const sequenceNumber = Number(sequence);
+      if (!Number.isFinite(sequenceNumber) || sequenceNumber < 1 || sequenceNumber > 300) return null;
+      const deviceCountText = excelColumnValue(row.raw, "N");
+      const countIndex = row.cells.findIndex((cell, index) => index > sequenceIndex && isCountLike(cell));
+      const countText = deviceCountText ? (isCountLike(deviceCountText) ? deviceCountText : "") : countIndex >= 0 ? row.cells[countIndex] : "";
+      if (!countText || !isCountLike(countText)) return null;
+      const note = row.cells[row.cells.length - 1] || "";
+      const category = chooseSourceCategory(row.cells.slice(sequenceIndex + 1)) || "其他";
+      const source = chooseSourceName(row.cells.slice(sequenceIndex + 1), category, note);
+      return {
+        row: row.row,
+        category: cleanSourceText(category),
+        source: cleanSourceText(source),
+        countText,
+        count: parseLooseNumber(countText),
+        note: cleanSourceText(note),
+      };
+    })
+    .filter((entry): entry is SowSourceEntry => Boolean(entry && entry.source && entry.countText));
+  if (excelEntries.length) return excelEntries;
+
+  return rawContent
+    .split(/\r?\n/)
+    .map((line) => {
+      const cells = markdownTableCells(line);
+      if (cells.length < 4 || isSeparatorRow(cells)) return null;
+      const [category, source, countText, note] = cells;
+      if (!category || category === "类别" || !source || !isCountLike(countText)) return null;
+      const row = Number(line.match(/Excel\s*R(\d+)/i)?.[1] || 0);
+      return {
+        row,
+        category: cleanSourceText(category),
+        source: cleanSourceText(source),
+        countText,
+        count: parseLooseNumber(countText),
+        note: cleanSourceText(note || ""),
+      };
+    })
+    .filter((entry): entry is SowSourceEntry => Boolean(entry && entry.category && entry.source));
+}
+
+function categoryTotals(entries: SowSourceEntry[]) {
+  const totals = new Map<string, { category: string; count: number; itemCount: number }>();
+  entries.forEach((entry) => {
+    const current = totals.get(entry.category) || { category: entry.category, count: 0, itemCount: 0 };
+    current.count += entry.count;
+    current.itemCount += 1;
+    totals.set(entry.category, current);
+  });
+  return Array.from(totals.values()).sort((a, b) => b.count - a.count);
+}
+
+function buildSowFactPack(fileName: string, rawContent: string): SowFactPack {
+  const entries = extractSourceEntries(rawContent);
+  const identity = inferSowIdentity(fileName, rawContent);
+  const scenarioDemand =
+    factValue(rawContent, ["场景需求"]) || rawContent.match(/[^\n。；;]*业务系统[^\n。；;]*变更[^\n。；;]*/)?.[0]?.trim() || "";
+  const trainingDemand = factValue(rawContent, ["深度培训", "培训需求", "培训"]) || rawContent.match(/[^\n。；;]*深度培训[^\n。；;]*/)?.[0]?.trim() || "";
+  const customDevelopmentDemand = factValue(rawContent, ["开发内容", "定制化开发", "开发需求"]);
+  return {
+    projectName: factValue(rawContent, ["项目名称", "项目全称", "项目名"]) || identity.projectName,
+    clientName:
+      usableFactValue(factValue(rawContent, ["客户名称"])) ||
+      usableFactValue(factValue(rawContent, ["甲方名称", "最终用户", "用户名称"])) ||
+      usableFactValue(identity.clientName),
+    fillDate: normalizeDateText(factValue(rawContent, ["填表日期"])),
+    expectedStartDate: normalizeDateText(factValue(rawContent, ["预计入场时间", "入场时间"])),
+    signingDate: normalizeDateText(factValue(rawContent, ["签单时间", "预计签约时间"])),
+    expectedPersonDays: parseLooseNumber(numberFactValue(rawContent, ["预计人天合计", "预计人天", "人天合计"])),
+    licenseCount: parseLooseNumber(numberFactValue(rawContent, ["License", "license"])),
+    background: factValue(rawContent, ["项目背景"]),
+    objective: factValue(rawContent, ["项目目标", "建设目标"]),
+    implementationSuggestion: factValue(rawContent, ["实施建议"]),
+    customerFocus: factValue(rawContent, ["客户关注点"]),
+    customerProfile: factValue(rawContent, ["客户资料"]),
+    customerAddress: factValue(rawContent, ["客户办公地址"]),
+    pocTime: factValue(rawContent, ["POC测试时间"]),
+    pocIssues: factValue(rawContent, ["POC难点和遗留问题说明"]),
+    externalRisk: factValue(rawContent, ["外部风险"]),
+    internalRisk: factValue(rawContent, ["内部风险"]),
+    developmentDemand: factValue(rawContent, ["开发需求"]),
+    scenarioDemand,
+    notificationDemand: factValue(rawContent, ["企业微信", "通知信息", "告警需要"]),
+    trainingDemand,
+    customDevelopmentDemand,
+    maintenanceDemand: factValue(rawContent, ["维保需求"]),
+    sourceEntries: entries,
+    sourceTotal: entries.reduce((sum, entry) => sum + entry.count, 0),
+    categoryTotals: categoryTotals(entries),
+    topSources: [...entries].sort((a, b) => b.count - a.count).slice(0, 10),
+    hasTraining: /培训/.test(trainingDemand),
+    hasCustomDevelopment: !isOutOfScopeValue(`${customDevelopmentDemand}\n${factValue(rawContent, ["开发需求"])}`),
+    hasBusinessChangeScenario: /变更|业务系统|运维/.test(scenarioDemand),
+    hasEnterpriseWechatNotification: /企业微信|微信/.test(rawContent),
+    hasDataMigration: /迁移|历史数据导入/.test(rawContent),
+  };
+}
+
+function factPackHasUsefulData(facts: SowFactPack) {
+  return Boolean(facts.projectName || facts.clientName || facts.sourceEntries.length || facts.expectedPersonDays || facts.objective || facts.background);
+}
+
+function markdownTable(headers: string[], rows: string[][]) {
+  return [`| ${headers.join(" |")} |`, `| ${headers.map(() => ":---").join(" |")} |`, ...rows.map((row) => `| ${row.join(" |")} |`)].join("\n");
+}
+
+function compactSourceList(entries: SowSourceEntry[], limit = 20) {
+  const selected = entries.slice(0, limit);
+  if (!selected.length) return "未识别到明细日志源。";
+  const lines = selected.map((entry) => `- ${entry.category} / ${entry.source}：${entry.countText}，${entry.note || "未填写说明"}（Excel R${entry.row}）`);
+  if (entries.length > limit) lines.push(`- 其余 ${entries.length - limit} 项详见原 SOW 明细。`);
+  return lines.join("\n");
+}
+
+function renderFactPackBlock(facts: SowFactPack) {
+  if (!factPackHasUsefulData(facts)) return "";
+  const categoryRows = facts.categoryTotals.map((item) => [item.category, String(item.itemCount), String(item.count)]);
+  const topRows = facts.topSources.map((item) => [item.category, item.source, item.countText, item.note || ""]);
+  return [
+    "## 本地确定性事实包（由AI中心从SOW表格抽取）",
+    markdownTable(
+      ["字段", "值"],
+      [
+        ["项目名称", facts.projectName || "待确认"],
+        ["客户名称", facts.clientName || "待确认"],
+        ["填表日期", facts.fillDate || "待确认"],
+        ["预计入场时间", facts.expectedStartDate || "待确认"],
+        ["预计人天合计", facts.expectedPersonDays ? `${facts.expectedPersonDays} 人天` : "待确认"],
+        ["License", facts.licenseCount ? String(facts.licenseCount) : "待确认"],
+        ["日志源明细项", `${facts.sourceEntries.length} 项`],
+        ["设备/日志源数量合计", facts.sourceTotal ? `${facts.sourceTotal}+` : "待确认"],
+      ],
+    ),
+    categoryRows.length ? `\n### 日志源分类汇总\n${markdownTable(["类别", "明细项", "数量合计"], categoryRows)}` : "",
+    topRows.length ? `\n### Top日志源\n${markdownTable(["类别", "日志源/设备类型", "数量", "说明"], topRows)}` : "",
+    facts.scenarioDemand ? `\n### 场景需求\n${facts.scenarioDemand}` : "",
+    facts.trainingDemand ? `\n### 培训要求\n${facts.trainingDemand}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function sowHandoffRowsFromFacts(facts: SowFactPack) {
+  const dailyVolumeText = facts.licenseCount ? `${facts.licenseCount} GB（按License ${facts.licenseCount}G口径暂代，需客户确认）` : "待确认（SOW未给出日均GB/TB）";
+  const pendingItems = [
+    facts.licenseCount ? "" : "日均数据量",
+    "留存周期",
+    "Agent/Syslog授权口径",
+    "上线前测试",
+    "项目管理工时是否包含",
+  ].filter(Boolean);
+
+  return [
+    ["项目类型", "日志管理平台 / 安全日志分析平台 / 日志审计合规项目"],
+    ["Agent数量", "0（SOW未单独给出Agent授权口径；当前按Syslog/日志源口径评估）"],
+    ["Syslog数量", facts.sourceTotal ? `${facts.sourceTotal}+（按数据接入明细设备数量合计，含200+等下限值）` : "待确认"],
+    ["分析APP套数", facts.hasBusinessChangeScenario ? "1（业务变更识别场景）" : "待确认"],
+    ["分析业务系统套数", facts.hasBusinessChangeScenario ? "1（基于堡垒机与业务系统中间件日志）" : "待确认"],
+    ["日均接入量GB", dailyVolumeText],
+    ["保留天数", "180（硬件评估默认值，需客户确认）"],
+    ["固定人天", facts.expectedPersonDays ? `${facts.expectedPersonDays} 人天（SOW系统预估）` : "待确认"],
+    ["SIEM", "否（SOW未明确提及）"],
+    ["UEBA", "否（SOW未明确提及）"],
+    ["大屏", "否（SOW未明确提及）"],
+    ["定制开发", facts.hasCustomDevelopment ? "是（需复核定制化开发表）" : "否（开发需求为无/未明确）"],
+    ["培训", facts.hasTraining ? "是（客户希望深度培训）" : "待确认"],
+    ["UAT/验收", "待确认（SOW仅出现上线前测试字段，未明确是否需要）"],
+    ["项目管理复杂度", "偏高（客户PM技术型，日志源数量大，需代理商/客户协同）"],
+    ["特殊行业/涉密", "否（SOW未明确提及）"],
+    ["主要待确认项", pendingItems.join("、")],
+  ];
+}
+
+function sowHandoffValuesFromFacts(facts: SowFactPack) {
+  return Object.fromEntries(sowHandoffRowsFromFacts(facts).filter(([, value]) => value && !/^待确认$/.test(value))) as Record<string, string>;
+}
+
+function renderSowHandoffSummaryTable(rows: string[][]) {
+  return markdownTable(["字段", "值"], rows);
+}
+
+function renderLocalSowNormalization(fileName: string, rawContent: string, supplementalInfo = "") {
+  const facts = buildSowFactPack(fileName, rawContent);
+  const sourceRows = facts.sourceEntries.map((entry) => [entry.category, entry.source, entry.countText, entry.note || ""]);
+  const handoffRows = sowHandoffRowsFromFacts(facts);
+  const licenseDailyVolumeText = facts.licenseCount ? `日均接入量按 License ${facts.licenseCount}G 口径暂代为 ${facts.licenseCount} GB；` : "SOW未给出日均 GB/TB；";
+  const pendingVolumeItems = facts.licenseCount ? "留存周期、授权口径和上线前测试" : "日均数据量、留存周期、授权口径和上线前测试";
+  const pendingVolumeBullet = facts.licenseCount
+    ? `- 日均接入量按 License ${facts.licenseCount}G 暂代，留存周期需客户确认。\n- Agent/Syslog/License 的商务授权口径与技术接入口径是否一致。`
+    : "- 日均数据量（GB/TB）与留存周期。\n- Agent/Syslog/License 的商务授权口径与技术接入口径是否一致。";
+
+  return [
+    "## 关键结论",
+    `- 客户为${facts.clientName || "待确认"}，项目为${facts.projectName || "待确认"}。`,
+    `- 项目目标是建设统一日志管理平台，收集 IT 设备日志数据，满足等保合规，并支持业务系统运维变更识别。`,
+    `- SOW 给出 License ${facts.licenseCount || "待确认"}，系统预计人天 ${facts.expectedPersonDays || "待确认"}，预计入场时间 ${facts.expectedStartDate || "待确认"}。`,
+    `- 数据接入明细识别到 ${facts.sourceEntries.length} 项，设备/日志源数量下限合计 ${facts.sourceTotal || "待确认"}。`,
+    `- 重点场景为基于堡垒机日志和业务系统中间件日志识别业务系统变更，并通过企业微信发送告警通知。`,
+    `- 客户明确希望深度培训，要求能自行调整采集规则和分析规则。`,
+    `- ${licenseDailyVolumeText}${pendingVolumeItems}仍需确认，硬件规模需结合页面参数继续评估。`,
+    supplementalInfo ? `\n### 用户补充信息\n${supplementalInfo}` : "",
+    "\n## 项目识别",
+    markdownTable(
+      ["字段", "识别值", "来源"],
+      [
+        ["客户名称", facts.clientName || "待确认", "SOW客户名称字段/文件名"],
+        ["项目名称", facts.projectName || "待确认", "SOW项目名称字段/文件名"],
+        ["填表日期", facts.fillDate || "待确认", "SOW填表日期"],
+        ["预计入场时间", facts.expectedStartDate || "待确认", "SOW客户办公时间行"],
+        ["预计人天合计", facts.expectedPersonDays ? `${facts.expectedPersonDays} 人天` : "待确认", "SOW合同签订情况行"],
+        ["License", facts.licenseCount ? String(facts.licenseCount) : "待确认", "SOW需求收集行"],
+      ],
+    ),
+    "\n## 项目背景与目标",
+    facts.background || "待确认",
+    facts.objective ? `\n${facts.objective}` : "",
+    "\n## 建设范围",
+    "- 建设统一日志管理平台，覆盖日志收集、存储、查询、审计合规和业务变更监测相关场景。",
+    "- 实施交付包含平台部署、数据接入、场景分析配置、告警通知配置、培训和验收推进。",
+    facts.implementationSuggestion ? `- 实施建议：${facts.implementationSuggestion}` : "",
+    "\n## 日志接入范围",
+    facts.categoryTotals.length ? markdownTable(["类别", "明细项", "数量合计"], facts.categoryTotals.map((item) => [item.category, String(item.itemCount), String(item.count)])) : "待确认",
+    "\n### 日志源明细",
+    sourceRows.length ? markdownTable(["类别", "日志源/设备类型", "数量", "说明"], sourceRows) : "待确认",
+    "\n## Agent 数量",
+    "SOW未单独给出 Agent 授权数量；当前数据接入表以操作系统、网络、安全设备、中间件、数据库等日志源数量为主。后续人天评估中 Agent 数量暂按 0/待确认处理，Syslog/日志源数量使用明细合计口径。",
+    "\n## Syslog 数量",
+    facts.sourceTotal ? `按数据接入明细合计为 ${facts.sourceTotal}+（其中 tomcat 为 200+，合计按下限 200 计）。` : "待确认",
+    "\n## 数据量与保留周期",
+    `${licenseDailyVolumeText}SOW未给出峰值系数、留存周期和节点容量。硬件资源评估会优先使用该日均量，并结合页面参数或默认值生成可复核方案。`,
+    "\n## 功能范围",
+    [
+      "- 统一日志管理、查询、快速定位、审计合规。",
+      facts.hasBusinessChangeScenario ? "- 业务系统运维变更识别：基于堡垒机日志、业务系统中间件日志识别变更系统与时间点。" : "",
+      facts.hasEnterpriseWechatNotification ? "- 告警通知：告警信息需要通过企业微信发送。" : "",
+      facts.hasTraining ? "- 深度培训：培训客户自行调整采集规则、分析规则。" : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    "\n## 实施活动",
+    "- 项目启动与实施计划确认。\n- 日志平台部署与基础配置。\n- 日志源接入、解析调试与连通性验证。\n- 业务变更识别场景配置与告警通知联调。\n- 成果汇报、深度培训、试运行支持与项目验收。",
+    "\n## 人天、工期与固定工作量",
+    facts.expectedPersonDays ? `SOW系统预计人天合计为 ${facts.expectedPersonDays} 人天；数据接入表明细人天小计区域显示 0，存在表单未填或系统汇总冲突，后续应并列展示“SOW原估/规则估算/差异”。` : "待确认。",
+    "\n## 试运行与上线验收",
+    "SOW出现“系统上线前是否需要测试”字段，但未填写明确结论；试运行、上线测试与验收周期需客户确认。",
+    "\n## 约束、前置条件与客户责任",
+    `- 客户需提供服务器/网络/账号/防火墙策略等平台部署条件。\n- 客户需协调日志源负责人配合接入、解析验证和样例日志提供。\n- 客户需确认${facts.licenseCount ? "留存周期、授权口径、上线测试和验收标准；日均接入量当前按License口径暂代" : "日均数据量、留存周期、授权口径、上线测试和验收标准"}。\n- 客户希望参与交付并获得深度培训，培训与知识转移需要纳入计划。`,
+    "\n## 待确认项",
+    `${pendingVolumeBullet}\n- 预计 22 人天是否已包含项目管理、上线测试、深度培训和客户协同成本。\n- 上线前性能/安全测试是否需要项目组执行。\n- tomcat 200+ 的准确数量和业务系统日志是否需要追加接入。`,
+    "\n## 传递给人天&资源评估的结构化摘要",
+    markdownTable(["字段", "值"], handoffRows),
+    "\n## 原始明细追溯",
+    compactSourceList(facts.sourceEntries, 40),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function normalizedResourceInputs(inputs?: ResourceAssessmentInputs) {
@@ -822,7 +1461,7 @@ function extractFieldFromRaw(rawContent: string, labels: string[]) {
   for (const line of lines) {
     const cells = line
       .split(/\t|\|/)
-      .map((cell) => cell.trim())
+      .map((cell) => stripCoordinatePrefix(cell.trim()))
       .filter(Boolean);
     for (let index = 0; index < cells.length; index += 1) {
       if (isLabelCell(cells[index])) {
@@ -832,7 +1471,7 @@ function extractFieldFromRaw(rawContent: string, labels: string[]) {
     }
 
     const match = line.match(new RegExp(`(?:${labels.join("|")})\\s*[:：]\\s*([^|\\t，,；;]+)`));
-    if (match?.[1]) return match[1].trim();
+    if (match?.[1]) return stripCoordinatePrefix(match[1]);
   }
 
   return "";
@@ -861,8 +1500,10 @@ function scopeFlagValue(raw: string, keywords: string[]) {
   return flagFromSow(raw, keywords) ? "是（SOW已提及，需按原文复核具体范围）" : "否（SOW未明确提及）";
 }
 
-function buildSowNormalizationPrompt(project: Project, fileName: string, rawContent: string) {
+function buildSowNormalizationPrompt(project: Project, fileName: string, rawContent: string, supplementalInfo = "") {
   const identity = inferSowIdentity(fileName, rawContent);
+  const supplementBlock = supplementPromptBlock("用户在生成前补充的信息（优先用于纠正或补齐本次 SOW 解析）", supplementalInfo);
+  const factPackBlock = renderFactPackBlock(buildSowFactPack(fileName, rawContent));
   return `请把下面的 SOW 文件正文解析为“可继续传入人天&资源评估、WBS、实施方案生成”的标准化 Markdown 输入源。
 
 重要：当前页面选中的项目只是承载这个 SOW 的容器，不代表 SOW 事实。项目名称、客户名称必须优先从 SOW 正文和文件名识别，禁止沿用当前页面项目名称或客户名称。
@@ -871,6 +1512,8 @@ function buildSowNormalizationPrompt(project: Project, fileName: string, rawCont
 从 SOW 推断的客户名称：${identity.clientName}
 识别依据：${identity.source}
 文件名：${fileName || "手工粘贴"}
+${supplementBlock}
+${factPackBlock ? `\n${factPackBlock}` : ""}
 
 要求：
 1. 不要只是转写原文，要识别 SOW 中的项目背景、建设目标、实施范围、功能范围、日志接入规模、交付活动、约束条件和验收信息。
@@ -899,6 +1542,7 @@ function buildSowNormalizationPrompt(project: Project, fileName: string, rawCont
 10. “传递给人天&资源评估的结构化摘要”必须用 Markdown 表格，至少包含：项目类型、Agent数量、Syslog数量、分析APP套数、分析业务系统套数、日均接入量GB、保留天数、固定人天、SIEM、UEBA、大屏、定制开发、培训、UAT/验收、项目管理复杂度、特殊行业/涉密、主要待确认项。
 11. SIEM、UEBA、Flink、数据迁移、大屏、定制开发这类范围项：如果 SOW 没有明确说明包含，就写“否（SOW未明确提及）”，不要写“待确认”。
 12. 如果原文里存在多张表或 Excel Sheet，要合并同类信息，并在不确定时标注来源片段或 Sheet 名称。
+13. 用户在生成前补充的信息优先级高于文件中的模糊、缺失或互相冲突信息；如果补充信息与文件明确内容冲突，必须在待确认项说明冲突来源。
 
 ----- SOW 文件正文开始 -----
 ${rawContent.trim()}
@@ -968,24 +1612,26 @@ function buildMarkdownRow(cells: string[]) {
   return `| ${cells.join(" |")} |`;
 }
 
-function replaceStructuredSummaryRows(content: string, values: Record<string, string>) {
-  const index = content.search(/^#{1,4}\s*传递给人天&资源评估的结构化摘要/m);
-  if (index < 0) return content;
-  const prefix = content.slice(0, index);
-  const summary = content.slice(index);
-  const lines = summary.split(/\r?\n/).map((line) => {
-    const cells = splitMarkdownRow(line);
-    if (cells.length < 2 || /^:?-{3,}:?$/.test(cells[0])) return line;
-    const normalizedKey = cells[0].replace(/\s+/g, "").toLowerCase();
-    const matchedKey = Object.keys(values).find((key) => normalizedKey === key.replace(/\s+/g, "").toLowerCase());
-    if (!matchedKey || !values[matchedKey]) return line;
-    return buildMarkdownRow([cells[0], values[matchedKey], ...cells.slice(2)]);
+function buildReconciledSowHandoffRows(content: string, facts: SowFactPack) {
+  const section = findHandoffSection(content, [
+    ["传递给人天", "资源评估"],
+    ["传入人天", "资源评估"],
+    ["人天", "资源评估", "结构化摘要"],
+  ]);
+  const existingEntries = handoffEntries(section?.body || "");
+  const factRows = sowHandoffRowsFromFacts(facts);
+
+  return factRows.map(([key, factValue]) => {
+    const existingValue = firstHandoffValue(existingEntries, [key]) || "";
+    if (!isPendingValue(factValue)) return [key, factValue];
+    if (existingValue && !isPendingValue(existingValue)) return [key, existingValue];
+    return [key, factValue];
   });
-  return `${prefix}${lines.join("\n")}`;
 }
 
-function reconcileSowStructuredSummary(content: string) {
-  const values: Record<string, string> = {
+function reconcileSowStructuredSummary(content: string, fileName: string, rawContent: string) {
+  const facts = buildSowFactPack(fileName, rawContent);
+  const fallbackValues: Record<string, string> = {
     项目类型: extractProjectType(content),
     Agent数量: confirmedNumberFromSection(content, "Agent 数量"),
     Syslog数量: confirmedNumberFromSection(content, "Syslog 数量"),
@@ -995,10 +1641,12 @@ function reconcileSowStructuredSummary(content: string) {
     大屏: extractScopeFlag(content, "大屏"),
     定制开发: extractScopeFlag(content, "定制开发"),
   };
-  return replaceStructuredSummaryRows(content, values);
+  const rows = buildReconciledSowHandoffRows(content, facts).map(([key, value]) => [key, !isPendingValue(value) ? value : fallbackValues[key] || value]);
+  const normalizedHandoff = renderSowHandoffSummaryTable(rows);
+  return replaceSowHandoffContent(content, normalizedHandoff);
 }
 
-export async function normalizeSowWithAi(project: Project, fileName: string, rawContent: string, config: AiModelConfig) {
+export async function normalizeSowWithAi(project: Project, fileName: string, rawContent: string, config: AiModelConfig, supplementalInfo = "") {
   const modelName = config.model || "gpt-5.5";
   const identity = inferSowIdentity(fileName, rawContent);
   console.info("[SOW标准化] 组装AI解析请求", {
@@ -1014,7 +1662,7 @@ export async function normalizeSowWithAi(project: Project, fileName: string, raw
       config,
       [
         { role: "system", content: workflowSystemPrompt() },
-        { role: "user", content: buildSowNormalizationPrompt(project, fileName, rawContent) },
+        { role: "user", content: buildSowNormalizationPrompt(project, fileName, rawContent, supplementalInfo) },
       ],
       {
         requireProjectDataConsent: true,
@@ -1022,13 +1670,23 @@ export async function normalizeSowWithAi(project: Project, fileName: string, raw
         timeoutMs: 240_000,
       },
     );
-    const reconciledContent = reconcileSowStructuredSummary(content);
+    const reconciledContent = reconcileSowStructuredSummary(content, fileName, rawContent);
     console.info("[SOW标准化] AI解析完成", {
       model: modelName,
       outputChars: reconciledContent.length,
     });
     return { content: reconciledContent, model: modelName };
   } catch (error) {
+    const fallbackContent = renderLocalSowNormalization(fileName, rawContent, supplementalInfo);
+    if (fallbackContent.trim()) {
+      console.warn("[SOW标准化] AI解析失败，已使用本地确定性事实抽取兜底生成标准输入源", {
+        error: error instanceof Error ? error.message : error,
+        fileName,
+        rawChars: rawContent.length,
+        outputChars: fallbackContent.length,
+      });
+      return { content: fallbackContent, model: "local-sow-fact-parser" };
+    }
     console.error("[SOW标准化] AI解析失败，已停止生成，避免输出无效标准输入源", {
       error: error instanceof Error ? error.message : error,
       fileName,
@@ -1047,6 +1705,9 @@ SOW文件：${workflow.sow.fileName || "未导入文件"}
 ${workflow.sow.content || "未提供SOW正文。请输出缺失信息清单。"}
 人工评估参数：
 ${resourceInputPromptBlock(workflow.resourceInputs)}
+生成前补充信息：
+- SOW补充：${supplementFor("sow", workflow) || "无"}
+- WBS补充：${supplementFor("wbs", workflow) || "无"}
 输出语言：简体中文。
 `;
 }
@@ -1184,13 +1845,13 @@ type HardwarePlan = {
 const RIZHIYI_SINGLE_NODE_RAID5_TB = 156;
 const RIZHIYI_SYSTEM_DISK = "960GB SSD × 2（RAID1）";
 
-function numberFromText(value: string) {
+function resourceNumberFromText(value: string) {
   const match = value.match(/\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : 0;
 }
 
 function explicitDailyGb(inputs: ResourceAssessmentInputs) {
-  const volume = numberFromText(inputs.dailyDataVolume);
+  const volume = resourceNumberFromText(inputs.dailyDataVolume);
   if (!volume) return 0;
   return inputs.dailyDataUnit === "TB" ? volume * 1024 : volume;
 }
@@ -1214,10 +1875,481 @@ function dailyGbFromWorkflow(workflow: DeliveryWorkflow) {
 
 function retentionDaysFromWorkflow(workflow: DeliveryWorkflow) {
   const inputs = normalizedResourceInputs(workflow.resourceInputs);
-  const explicit = numberFromText(inputs.retentionDays);
+  const explicit = resourceNumberFromText(inputs.retentionDays);
   if (explicit) return Math.round(explicit);
-  const candidate = numbersNear(workflow.sow.content || "", ["天", "day", "days", "保留", "留存"])[0];
+  const source = workflow.sow.content || "";
+  const candidate = numbersNear(source, ["天", "day", "days", "保留", "留存"])[0];
   return candidate ? Math.round(Number(candidate)) : 180;
+}
+
+function factPackFromWorkflow(workflow: DeliveryWorkflow) {
+  return buildSowFactPack(workflow.sow.fileName, workflow.sow.content);
+}
+
+function effectiveSyslogCount(workflow: DeliveryWorkflow, facts = factPackFromWorkflow(workflow)) {
+  const inputs = normalizedResourceInputs(workflow.resourceInputs);
+  const explicit = resourceNumberFromText(inputs.syslogCount);
+  if (explicit) return explicit;
+  return facts.sourceTotal || 0;
+}
+
+function effectiveAgentCount(workflow: DeliveryWorkflow) {
+  const inputs = normalizedResourceInputs(workflow.resourceInputs);
+  return resourceNumberFromText(inputs.agentCount);
+}
+
+function effectiveFixedPersonDays(workflow: DeliveryWorkflow, facts = factPackFromWorkflow(workflow)) {
+  const inputs = normalizedResourceInputs(workflow.resourceInputs);
+  if (inputs.hasFixedPersonDays) return resourceNumberFromText(inputs.fixedPersonDays);
+  return facts.expectedPersonDays || 0;
+}
+
+function effectiveAnalysisAppCount(workflow: DeliveryWorkflow, facts = factPackFromWorkflow(workflow)) {
+  const inputs = normalizedResourceInputs(workflow.resourceInputs);
+  const explicit = resourceNumberFromText(inputs.analysisAppCount);
+  if (explicit) return explicit;
+  return facts.hasBusinessChangeScenario ? 1 : 0;
+}
+
+function effectiveBusinessSystemCount(workflow: DeliveryWorkflow, facts = factPackFromWorkflow(workflow)) {
+  const inputs = normalizedResourceInputs(workflow.resourceInputs);
+  const explicit = resourceNumberFromText(inputs.analysisBusinessSystemCount);
+  if (explicit) return explicit;
+  return facts.hasBusinessChangeScenario ? 1 : 0;
+}
+
+function ceilCharge(count: number, unitSize: number, unitDays: number) {
+  return count > 0 ? Math.ceil(count / unitSize) * unitDays : 0;
+}
+
+function renderLocalPersonDayDraft(project: Project, workflow: DeliveryWorkflow) {
+  const facts = factPackFromWorkflow(workflow);
+  if (!factPackHasUsefulData(facts)) return "";
+  const agentCount = effectiveAgentCount(workflow);
+  const syslogCount = effectiveSyslogCount(workflow, facts);
+  const appCount = effectiveAnalysisAppCount(workflow, facts);
+  const businessSystemCount = effectiveBusinessSystemCount(workflow, facts);
+  const fixedPersonDays = effectiveFixedPersonDays(workflow, facts);
+  const agentDays = ceilCharge(agentCount, 250, 5);
+  const syslogDays = ceilCharge(syslogCount, 50, 5);
+  const analysisDays = appCount * 5 + businessSystemCount * 3;
+  const trainingDays = facts.hasTraining ? 2 : 0;
+  const notificationDays = facts.hasEnterpriseWechatNotification ? 1 : 0;
+  const baseDeliveryDays = 5;
+  const baseSubtotal = baseDeliveryDays + agentDays + syslogDays + analysisDays + trainingDays + notificationDays;
+  const pmSuggestion = Math.max(2, Math.ceil(baseSubtotal * 0.2));
+  const ruleTotal = baseSubtotal + pmSuggestion;
+  const optimistic = Math.max(1, Math.round(ruleTotal * 0.85));
+  const likely = ruleTotal;
+  const pessimistic = Math.round(ruleTotal * 1.25);
+  const pert = Math.round((optimistic + 4 * likely + pessimistic) / 6);
+  const handoffRows = [
+    ["总人天口径", fixedPersonDays ? `SOW原估 ${fixedPersonDays} 人天；规则估算 ${ruleTotal} 人天；建议PM确认差异` : `规则估算 ${ruleTotal} 人天；SOW原估待确认`],
+    ["阶段工时建议", `启动2、需求调研3、平台部署与数据接入${Math.max(8, syslogDays)}、场景规则${Math.max(3, analysisDays)}、培训${Math.max(1, trainingDays)}、试运行/验收待确认`],
+    ["数据接入口径", `${facts.sourceEntries.length}项日志源，设备/日志源数量下限${syslogCount}+`],
+    ["待确认项", "日均数据量、留存周期、上线前测试、PM工时是否包含、License与接入口径差异"],
+  ];
+
+  return [
+    "## 人天评估结果（本地确定性初步，不含未确认加成）",
+    "### 一、输入来源与评估条件",
+    markdownTable(
+      ["字段", "值"],
+      [
+        ["项目名称", facts.projectName || project.name],
+        ["客户名称", facts.clientName || project.client],
+        ["SOW预计人天", fixedPersonDays ? `${fixedPersonDays} 人天` : "待确认"],
+        ["日志源明细", `${facts.sourceEntries.length} 项，数量下限 ${syslogCount}+`],
+        ["分析场景", facts.hasBusinessChangeScenario ? "业务系统变更识别 1 项" : "待确认"],
+        ["深度培训", facts.hasTraining ? "包含" : "待确认"],
+      ],
+    ),
+    "### 二、基础服务明细",
+    markdownTable(
+      ["服务项", "公式/依据", "人天"],
+      [
+        ["基础交付", "项目启动、计划、基础部署准备", String(baseDeliveryDays)],
+        ["Agent接入", `Agent=ceil(${agentCount}/250)×5`, String(agentDays)],
+        ["Syslog/日志源接入", `Syslog=ceil(${syslogCount}/50)×5`, String(syslogDays)],
+        ["数据分析", `分析APP ${appCount}×5 + 业务系统 ${businessSystemCount}×3`, String(analysisDays)],
+        ["企业微信告警联调", facts.hasEnterpriseWechatNotification ? "SOW明确告警通过企业微信发送" : "未明确", String(notificationDays)],
+        ["深度培训", facts.hasTraining ? "客户希望自行调整采集和分析规则" : "未明确", String(trainingDays)],
+      ],
+    ),
+    "### 三、基础服务小计",
+    `基础服务小计：${baseSubtotal} 人天。`,
+    "### 四、未确认加成",
+    "- 项目管理：建议按20%暂估，但需PM确认是否已包含在SOW 22人天内。\n- 上线测试/UAT：SOW字段未填写明确结论，暂不计入完整合计。\n- 国网/军工/涉密：SOW未明确提及，按不包含处理。",
+    "### 五、传统估算合计",
+    markdownTable(
+      ["口径", "人天", "说明"],
+      [
+        ["SOW原估", fixedPersonDays ? String(fixedPersonDays) : "待确认", "来自客户需求表系统预计人天"],
+        ["规则估算", String(ruleTotal), "基础服务小计 + 项目管理建议值"],
+        ["差异说明", fixedPersonDays ? `${ruleTotal - fixedPersonDays} 人天` : "待确认", "日志源数量大，SOW明细小计为空/为0，需复核22人天是否为商务口径"],
+      ],
+    ),
+    "### 六、PERT三点估算",
+    markdownTable(
+      ["乐观", "最可能", "悲观", "PERT"],
+      [[String(optimistic), String(likely), String(pessimistic), String(pert)]],
+    ),
+    "### 七、SOW原估对比",
+    fixedPersonDays
+      ? `SOW原估为 ${fixedPersonDays} 人天；本地规则按 ${syslogCount}+ 日志源下限估算为 ${ruleTotal} 人天。由于原表数据接入小计显示0，建议在排期前确认是否仅以22人天作为合同上限。`
+      : "SOW未识别到有效原估。",
+    "### 八、缺失参数清单与待确认问题",
+    "- 日均数据量GB/TB与留存周期。\n- 上线前测试是否需要项目组执行。\n- 项目管理工时是否已包含。\n- tomcat 200+ 的准确数量。\n- License 50 与设备/日志源数量下限合计之间的口径关系。",
+    "### 九、传递给WBS/实施计划的结构化摘要",
+    markdownTable(["字段", "值"], handoffRows),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+type LocalPlanRow = {
+  code: string;
+  type: string;
+  task: string;
+  milestone: string;
+  duration: number;
+  owner: string;
+  executor: string;
+  predecessor: string;
+  deliverable: string;
+  notes: string;
+};
+
+function dateAddWorkdays(startDate: string, offset: number) {
+  const match = startDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return startDate;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  let remaining = Math.max(0, offset);
+  while (remaining > 0) {
+    date.setUTCDate(date.getUTCDate() + 1);
+    const day = date.getUTCDay();
+    if (day !== 0 && day !== 6) remaining -= 1;
+  }
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function localPlanRow(
+  code: string,
+  type: string,
+  task: string,
+  duration: number,
+  owner: string,
+  executor: string,
+  predecessor: string,
+  deliverable: string,
+  notes = "",
+  milestone = "",
+): LocalPlanRow {
+  return { code, type, task, milestone, duration, owner, executor, predecessor, deliverable, notes };
+}
+
+function sourceTaskRows(facts: SowFactPack) {
+  const categoryOrder = ["操作系统", "中间件", "数据库", "交换机", "防火墙", "负载均衡", "堡垒机", "青藤云", "zabbix", "业务系统"];
+  const rows: LocalPlanRow[] = [];
+  let index = 3;
+  categoryOrder.forEach((category) => {
+    const entries = facts.sourceEntries.filter((entry) => entry.category === category);
+    if (!entries.length) return;
+    const total = entries.reduce((sum, entry) => sum + entry.count, 0);
+    const names = entries
+      .slice(0, 4)
+      .map((entry) => `${entry.source}×${entry.countText}`)
+      .join("、");
+    const taskScope = entries.length > 1 ? `（${entries.length}类）` : "";
+    const duration = Math.max(1, Math.min(5, Math.ceil(total / (category === "操作系统" ? 450 : 120))));
+    rows.push(
+      localPlanRow(
+        `3.${index}`,
+        "实施",
+        `${category}日志接入与解析调试${taskScope}`,
+        duration,
+        "实施工程师",
+        "实施工程师",
+        index === 3 ? "3.2" : `3.${index - 1}`,
+        `${category}日志接入记录、解析规则、连通性验证截图`,
+        names,
+      ),
+    );
+    index += 1;
+  });
+  return rows;
+}
+
+function renderPlanTable(rows: LocalPlanRow[], startDate: string) {
+  let elapsed = 0;
+  const rendered = rows.map((row) => {
+    const start = dateAddWorkdays(startDate, elapsed);
+    const end = dateAddWorkdays(start, Math.max(0, row.duration - 1));
+    elapsed += Math.max(1, row.duration);
+    return [
+      row.code,
+      row.type,
+      row.task,
+      row.milestone,
+      start,
+      end,
+      `${row.duration}工作日`,
+      "未开始",
+      "0%",
+      row.owner,
+      row.executor,
+      row.predecessor,
+      row.deliverable,
+      "0",
+      row.notes,
+    ];
+  });
+  return markdownTable(["编号", "类型", "任务", "里程碑（是/否）", "计划开始", "计划结束", "工期", "状态", "进度", "责任人", "执行者", "前置任务", "输出成果", "延迟天数", "备注"], rendered);
+}
+
+function renderLocalWbsDraft(project: Project, workflow: DeliveryWorkflow) {
+  const facts = factPackFromWorkflow(workflow);
+  if (!factPackHasUsefulData(facts)) return "";
+  const startDate = facts.expectedStartDate || now().slice(0, 10);
+  const fixedPersonDays = effectiveFixedPersonDays(workflow, facts);
+  const dataRows = sourceTaskRows(facts);
+  const hasPilot = /试运行|上线|验收|测试/.test(`${workflow.personDayAssessment.content}\n${facts.objective}\n${facts.scenarioDemand}`);
+  const rows: LocalPlanRow[] = [
+    localPlanRow("1.0", "主任务", "项目启动与实施准备", 1, "项目经理", "项目经理", "", "项目启动会议纪要、项目干系人清单"),
+    localPlanRow("1.1", "实施", "项目启动会议与实施交底", 1, "项目经理", "项目经理", "1.0", "启动会纪要、实施范围确认记录"),
+    localPlanRow("1.2", "实施", "制定详细实施计划", 1, "项目经理", "项目经理", "1.1", "实施计划、沟通计划"),
+    localPlanRow("2.0", "主任务", "需求调研与环境确认", 1, "项目经理", "实施工程师", "1.2", "需求调研记录、环境准备清单"),
+    localPlanRow("2.1", "实施", "日志源范围与授权口径确认", 1, "项目经理", "实施工程师", "1.2", "日志源范围确认表"),
+    localPlanRow("2.2", "实施", "部署资源、网络策略与账号确认", 1, "实施工程师", "实施工程师", "2.1", "资源申请清单、网络策略清单"),
+    localPlanRow("3.0", "主任务", "平台部署与数据接入", 1, "项目经理", "实施工程师", "2.2", "平台部署记录、数据接入清单"),
+    localPlanRow("3.1", "实施", "日志易平台安装部署", 2, "实施工程师", "实施工程师", "2.2", "部署记录、基础配置截图"),
+    localPlanRow("3.2", "实施", "基础配置与连通性验证", 1, "实施工程师", "实施工程师", "3.1", "连通性验证记录"),
+    ...dataRows,
+    localPlanRow("3.99", "里程碑", "M1 平台部署与数据接入完成", 1, "项目经理", "实施工程师", dataRows.at(-1)?.code || "3.2", "M1阶段验收记录", "", "里程碑"),
+    localPlanRow("4.0", "主任务", "场景规则交付", 1, "项目经理", "实施工程师", "3.99", "场景规则配置清单"),
+    localPlanRow("4.1", "实施", "业务系统变更识别场景配置", 2, "实施工程师", "实施工程师", "3.99", "业务变更识别规则、样例查询结果", "基于堡垒机日志与业务系统中间件日志"),
+    localPlanRow("4.2", "实施", "企业微信告警通知联调", facts.hasEnterpriseWechatNotification ? 1 : 0, "实施工程师", "实施工程师", "4.1", "告警通知联调记录", facts.hasEnterpriseWechatNotification ? "SOW明确需要企业微信通知" : "如客户不需要可删除"),
+    localPlanRow("4.99", "里程碑", "M2 场景规则交付完成", 1, "项目经理", "实施工程师", "4.2", "M2阶段验收记录", "", "里程碑"),
+    localPlanRow("5.0", "主任务", "项目成果汇报与培训", 1, "项目经理", "项目经理", "4.99", "成果汇报材料、培训记录"),
+    localPlanRow("5.1", "实施", "项目成果汇报与基础操作培训", 1, "项目经理", "实施工程师", "4.99", "成果汇报材料、培训记录"),
+    ...(facts.hasTraining
+      ? [
+          localPlanRow(
+            "5.2",
+            "实施",
+            "采集规则与分析规则专项培训",
+            2,
+            "实施工程师",
+            "实施工程师",
+            "5.1",
+            "专项培训材料、演练记录",
+            "客户希望自行调整规则",
+          ),
+        ]
+      : []),
+    ...(hasPilot
+      ? [
+          localPlanRow("6.0", "主任务", "上线试运行", 1, "项目经理", "实施工程师", facts.hasTraining ? "5.2" : "5.1", "试运行记录"),
+          localPlanRow("6.1", "实施", "上线试运行支持与问题闭环", 3, "实施工程师", "实施工程师", facts.hasTraining ? "5.2" : "5.1", "试运行问题清单、闭环记录"),
+        ]
+      : []),
+    localPlanRow("7.0", "主任务", "项目验收", 1, "项目经理", "项目经理", hasPilot ? "6.1" : facts.hasTraining ? "5.2" : "5.1", "验收材料"),
+    localPlanRow("7.1", "里程碑", "M3 项目验收", 1, "项目经理", "项目经理", hasPilot ? "6.1" : facts.hasTraining ? "5.2" : "5.1", "验收报告、交付物归档清单", "", "里程碑"),
+  ].filter((row) => row.duration > 0);
+
+  const taskRows = rows.map((row) => [row.code, row.type, row.task, row.owner, row.deliverable]);
+  const supplement = supplementFor("wbs", workflow);
+  return [
+    "## WBS分解与实施计划表（本地确定性草稿）",
+    supplement ? `### 本次生成前补充信息\n${supplement}` : "",
+    "### 一、输入来源与生成条件",
+    markdownTable(
+      ["字段", "值"],
+      [
+        ["项目名称", facts.projectName || project.name],
+        ["客户名称", facts.clientName || project.client],
+        ["计划起点", `${startDate}${facts.expectedStartDate ? "（SOW预计入场时间）" : "（生成日期默认）"}`],
+        ["SOW预计人天", fixedPersonDays ? `${fixedPersonDays} 人天` : "待确认"],
+        ["日志源规模", `${facts.sourceEntries.length}项，数量下限${facts.sourceTotal}+`],
+      ],
+    ),
+    "### 二、WBS任务清单",
+    markdownTable(["编号", "类型", "任务", "责任人", "输出成果"], taskRows),
+    "### 三、详细计划表",
+    renderPlanTable(rows, startDate),
+    "### 四、文本甘特图时间轴",
+    rows
+      .filter((row) => /^\d+\.0$/.test(row.code) || row.milestone)
+      .map((row) => `- ${row.code} ${row.task}：${row.duration}工作日`)
+      .join("\n"),
+    "### 五、里程碑节点列表",
+    markdownTable(
+      ["里程碑", "触发任务", "验收物"],
+      rows.filter((row) => row.milestone).map((row) => [row.task, row.predecessor, row.deliverable]),
+    ),
+    "### 六、缺失参数清单与待确认问题",
+    "- 当前排期按SOW预计入场时间和工作日连续排布，未扣除客户不可用窗口。\n- 22人天是否作为排期上限需PM确认。\n- 日均数据量与硬件资源准备周期未确认，可能影响平台部署起点。\n- 上线试运行是否纳入合同范围需确认。",
+    "### 七、传递给实施方案的计划摘要",
+    markdownTable(
+      ["字段", "值"],
+      [
+        ["阶段", "项目启动、需求调研与环境确认、平台部署与数据接入、场景规则交付、成果汇报与培训、上线试运行/验收"],
+        ["计划起点", startDate],
+        ["任务数量", String(rows.length)],
+        ["里程碑", rows.filter((row) => row.milestone).map((row) => row.task).join("；")],
+        ["主要交付物", "启动会纪要、实施计划、部署记录、日志接入清单、场景规则、培训材料、验收报告"],
+      ],
+    ),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function renderLocalHardwareMissingDraft(project: Project, workflow: DeliveryWorkflow) {
+  const facts = factPackFromWorkflow(workflow);
+  if (!factPackHasUsefulData(facts)) return "";
+  const inputs = normalizedResourceInputs(workflow.resourceInputs);
+  return [
+    "## 硬件资源评估结果（缺少容量参数，暂不能正式测算）",
+    "### 一、输入来源与当前结论",
+    markdownTable(
+      ["字段", "值"],
+      [
+        ["项目名称", facts.projectName || project.name],
+        ["客户名称", facts.clientName || project.client],
+        ["日志源规模", `${facts.sourceEntries.length}项，设备/日志源数量下限${facts.sourceTotal || "待确认"}+`],
+        ["日均数据量", inputs.dailyDataVolume ? `${inputs.dailyDataVolume} ${inputs.dailyDataUnit}` : "缺失"],
+        ["留存天数", inputs.retentionDays || "180（默认，待确认）"],
+        ["峰值系数", inputs.peakFactor || "1"],
+        ["单节点容量", inputs.singleNodeUsableTb ? `${inputs.singleNodeUsableTb} ${inputs.singleNodeCapacityUnit}` : "缺失"],
+        ["节点数", inputs.nodeCount || "缺失"],
+      ],
+    ),
+    "### 二、缺失参数清单",
+    markdownTable(
+      ["参数", "状态", "为什么需要"],
+      [
+        ["日均数据量GB/TB", inputs.dailyDataVolume ? "已填写" : "缺失", "决定数据存储、Kafka缓存和EPS估算"],
+        ["留存周期", inputs.retentionDays ? "已填写/默认180" : "缺失", "决定总存储容量"],
+        ["单节点可用容量", inputs.singleNodeUsableTb ? "已填写" : "缺失", "决定节点数与N-1校验"],
+        ["节点数/高可用要求", inputs.nodeCount ? "已填写" : "缺失", "决定集群总容量和容灾能力"],
+      ],
+    ),
+    "### 三、可先确认的部署约束",
+    "- 当前SOW已明确日志源数量很大，硬件测算不能只按License 50推导。\n- SOW未明确SIEM/UEBA/Flink，默认不纳入本期硬件增量。\n- 业务变更识别场景需要保证堡垒机日志与业务系统中间件日志的解析和查询性能。",
+    "### 四、三档方案对比",
+    markdownTable(
+      ["方案", "部署方式", "单节点配置", "系统盘", "数据盘", "单节点存储", "集群总存储", "N-1容灾", "预估价格等级", "适用建议"],
+      [
+        ["最低", "待确认", "缺少日均数据量，暂不推荐落地", "待确认", "待确认", "待确认", "待确认", "待确认", "待确认", "补齐容量参数后再测算"],
+        ["推荐★", "待确认", "缺少日均数据量，暂不推荐落地", "待确认", "待确认", "待确认", "待确认", "待确认", "待确认", "补齐容量参数后再测算"],
+        ["最优", "待确认", "缺少日均数据量，暂不推荐落地", "待确认", "待确认", "待确认", "待确认", "待确认", "待确认", "补齐容量参数后再测算"],
+      ],
+    ),
+    "### 实施方案第八章结构化摘要",
+    markdownTable(
+      ["字段", "建议"],
+      [
+        ["部署模式", "【待确认】缺少日均数据量和节点容量，无法形成有效部署规模"],
+        ["推荐方案", "【待确认】"],
+        ["数据存储", "【待确认】"],
+        ["Kafka缓存", "【待确认】"],
+        ["容量校验", "【待确认】需要补充日均数据量、留存周期、单节点容量和节点数"],
+      ],
+    ),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function renderLocalImplementationDraft(project: Project, workflow: DeliveryWorkflow) {
+  const facts = factPackFromWorkflow(workflow);
+  if (!factPackHasUsefulData(facts)) return "";
+  const hardwareSummary = backfillWorkflowHandoff(workflow).hardware || "硬件评估缺失：日均数据量、留存周期和节点容量未确认，暂不能形成有效部署规模。";
+  const wbsSummary = backfillWorkflowHandoff(workflow).wbs || "WBS计划缺失：请先生成WBS与实施计划。";
+  return [
+    "# 项目实施方案",
+    "## 文档信息",
+    markdownTable(
+      ["字段", "值"],
+      [
+        ["项目名称", facts.projectName || project.name],
+        ["客户名称", facts.clientName || project.client],
+        ["文档版本", "V1.0"],
+        ["文档日期", now().slice(0, 10)],
+        ["编制角色", "项目经理/实施工程师"],
+        ["适用范围", "日志管理平台实施、日志源接入、业务变更识别场景、培训与验收"],
+      ],
+    ),
+    "## 修订记录",
+    markdownTable(["版本", "日期", "修订说明", "修订人"], [["V1.0", now().slice(0, 10), "AI生成中心本地事实草稿", "项目经理"]]),
+    "### 第一章 前言",
+    `本文档面向${facts.clientName || project.client}的${facts.projectName || project.name}，用于说明日志管理平台实施范围、日志接入计划、场景交付方向、资源需求、实施计划和项目管理机制。方案内容以客户需求表SOW和前序AI中心评估草稿为依据，待确认项均以【待确认】标识。`,
+    "### 第二章 日志易产品概述",
+    "日志易平台用于统一采集、存储、检索和分析IT基础设施、网络安全设备、中间件、数据库和应用相关日志，支持审计合规、运维排障、告警通知和场景化分析。项目交付过程中将优先保证日志接入、查询检索、审计合规和客户可持续维护能力。",
+    "### 第三章 项目背景及目标",
+    facts.background || "【待确认】项目背景未明确。",
+    facts.objective || "【待确认】项目目标未明确。",
+    markdownTable(
+      ["目标", "说明"],
+      [
+        ["合规审计", "满足等保合规层面的日志数据审计需求。"],
+        ["统一日志管理", "集中收集IT设备日志，支持统一查询和快速定位。"],
+        ["业务变更识别", facts.hasBusinessChangeScenario ? "基于堡垒机日志和业务系统中间件日志识别业务系统变更。" : "【待确认】"],
+      ],
+    ),
+    "### 第四章 日志接入范围",
+    markdownTable(["类别", "明细项", "数量合计"], facts.categoryTotals.map((item) => [item.category, String(item.itemCount), String(item.count)])),
+    "\n日志源明细将按客户现场可达性和样例日志完整度分批接入。对 tomcat 200+ 等非精确数量，实施前需客户确认准确数量。",
+    "### 第五章 建议交付场景方向",
+    markdownTable(
+      ["场景", "依据", "交付方式"],
+      [
+        ["日志审计合规", "SOW明确满足等保合规", "完成日志源接入、审计查询验证和留存策略确认"],
+        ["统一查询与快速定位", "客户关注点明确", "配置基础检索、字段解析和常用查询视图"],
+        ["业务系统变更识别", facts.scenarioDemand || "SOW场景需求", "基于堡垒机日志和中间件日志配置识别规则"],
+      ],
+    ),
+    "### 第六章 告警配置重点场景",
+    markdownTable(
+      ["告警/通知", "触发依据", "通知方式", "备注"],
+      [
+        ["业务系统变更事件", "堡垒机日志、业务系统中间件日志", facts.hasEnterpriseWechatNotification ? "企业微信" : "【待确认】", "需客户确认通知群、接收人和频率"],
+        ["日志接入异常", "采集链路中断或解析失败", "平台告警/企业微信【待确认】", "建议纳入运维监控"],
+      ],
+    ),
+    "### 第七章 日志易系统架构",
+    "系统架构建议包含采集层、传输/缓存层、存储检索层、分析规则层和展示/告警层。最终节点数量、存储容量、Kafka缓存和高可用策略必须以硬件资源评估为准。",
+    "### 第八章 部署规模与资源需求",
+    hardwareSummary,
+    "### 第九章 实施计划",
+    wbsSummary,
+    "### 第十章 沟通管理计划与风险管理",
+    markdownTable(
+      ["机制", "建议"],
+      [
+        ["沟通机制", "建立项目微信群/会议机制，每周同步进度、风险和客户待办事项。"],
+        ["变更管理", "新增日志源、追加业务日志或新增场景需形成变更记录并评估人天/排期影响。"],
+        ["客户配合", "客户需协调设备负责人、网络策略、账号权限、样例日志和验收人员。"],
+        ["风险管理", "重点关注日志源数量大、日均数据量缺失、License口径差异、深度培训范围和上线测试范围。"],
+      ],
+    ),
+    "### 缺失参数清单与待确认问题",
+    "- 日均数据量GB/TB、留存周期、峰值系数。\n- 硬件节点数量、单节点容量和高可用要求。\n- 22人天是否包含项目管理、上线测试和深度培训。\n- License 50 与日志源数量下限合计之间的商务/技术口径。\n- 业务日志是否在当前阶段追加接入。",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function renderLocalDeliveryDraft(kind: DeliveryDraftKind, project: Project, workflow: DeliveryWorkflow) {
+  if (kind === "personDay") return renderLocalPersonDayDraft(project, workflow);
+  if (kind === "hardware") return renderLocalHardwareMissingDraft(project, workflow);
+  if (kind === "wbs") return renderLocalWbsDraft(project, workflow);
+  if (kind === "implementation") return renderLocalImplementationDraft(project, workflow);
+  return "";
 }
 
 function hardwareProjectType(workflow: DeliveryWorkflow) {
@@ -1256,14 +2388,14 @@ function formatCapacityTb(value: number) {
 
 function singleNodeCapacityTb(workflow: DeliveryWorkflow) {
   const inputs = normalizedResourceInputs(workflow.resourceInputs);
-  const raw = numberFromText(inputs.singleNodeUsableTb);
+  const raw = resourceNumberFromText(inputs.singleNodeUsableTb);
   if (!raw) return RIZHIYI_SINGLE_NODE_RAID5_TB;
   return inputs.singleNodeCapacityUnit === "GB" ? raw / 1024 : raw;
 }
 
 function nodeCountFromWorkflow(workflow: DeliveryWorkflow) {
   const inputs = normalizedResourceInputs(workflow.resourceInputs);
-  const raw = numberFromText(inputs.nodeCount);
+  const raw = resourceNumberFromText(inputs.nodeCount);
   return raw ? Math.max(1, Math.round(raw)) : 0;
 }
 
@@ -1345,7 +2477,7 @@ function renderHardwareSkillDraft(project: Project, workflow: DeliveryWorkflow) 
   if (!dailyGb) return "";
   const retentionDays = retentionDaysFromWorkflow(workflow);
   const inputs = normalizedResourceInputs(workflow.resourceInputs);
-  const peakFactor = numberFromText(inputs.peakFactor) || 1;
+  const peakFactor = resourceNumberFromText(inputs.peakFactor) || 1;
   const projectType = hardwareProjectType(workflow);
   const platformName = projectType === "siem" ? "SIEM 安全平台" : projectType === "ueba" ? "UEBA 用户行为分析平台" : "日志平台";
   const dataTb = (dailyGb * 1.5 * 2 * retentionDays * 1.2) / 1024;
@@ -1354,7 +2486,7 @@ function renderHardwareSkillDraft(project: Project, workflow: DeliveryWorkflow) 
   const eps = dailyGb * 50;
   const level = skillLevel(dailyGb);
   const capacityTb = singleNodeCapacityTb(workflow);
-  const userDiskProvided = Boolean(numberFromText(inputs.singleNodeUsableTb));
+  const userDiskProvided = Boolean(resourceNumberFromText(inputs.singleNodeUsableTb));
   const explicitNodeCount = nodeCountFromWorkflow(workflow);
   const explicitTotalCapacity = explicitNodeCount ? explicitNodeCount * capacityTb : 0;
   const explicitN1Capacity = explicitNodeCount > 1 ? (explicitNodeCount - 1) * capacityTb : 0;
@@ -1371,7 +2503,6 @@ function renderHardwareSkillDraft(project: Project, workflow: DeliveryWorkflow) 
         `| ${plan.label} | ${plan.deployment} | ${plan.nodeConfig} | ${plan.systemDisk} | ${dataDisk} | ${formatCapacityTb(dataTb / Math.max(plan.storageNodes, 1))} | ${formatCapacityTb(plan.storageNodes * capacityTb)} | ${n1Text(plan.storageNodes, dataTb, capacityTb, index === 0 ? "min" : index === 1 ? "rec" : "opt")} | ${plan.priceLevel} | ${plan.advice} |`,
     )
     .join("\n");
-
   return `## 📊 ${platformName}硬件资源评估
 
 **日均 ${dailyGb.toLocaleString("zh-CN")} GB，保留 ${retentionDays} 天（${level}）→ 推荐 ${plans[1].nodeConfig}。**
@@ -1424,6 +2555,7 @@ function buildGatewaySafeContext(project: Project, workflow: DeliveryWorkflow, k
   const sow = workflow.sow.content || "";
   const handoff = backfillWorkflowHandoff(workflow);
   const identity = identityForWorkflow(project, workflow);
+  const supplement = kind ? supplementFor(kind, workflow) : "";
   const sowScaleFacts =
     kind === "hardware"
       ? [
@@ -1448,6 +2580,7 @@ function buildGatewaySafeContext(project: Project, workflow: DeliveryWorkflow, k
     `personDayHandoffChars=${handoff.personDay.length}`,
     `hardwareHandoffChars=${handoff.hardware.length}`,
     `wbsHandoffChars=${handoff.wbs.length}`,
+    `currentStepSupplementChars=${supplement.length}`,
     ...resourceInputFactLines(workflow.resourceInputs, kind),
     ...sowScaleFacts,
     `hasUat=${flagFromSow(sow, ["UAT", "uat", "上线测试", "用户验收测试"])}`,
@@ -1470,6 +2603,7 @@ function buildGatewaySafeContext(project: Project, workflow: DeliveryWorkflow, k
 function buildGatewaySafePrompt(kind: DeliveryDraftKind, project: Project, workflow: DeliveryWorkflow) {
   const facts = buildGatewaySafeContext(project, workflow, kind);
   const handoff = backfillWorkflowHandoff(workflow);
+  const supplement = supplementFor(kind, workflow);
   const sowSourceContent = [workflow.sow.content, handoff.sow ? `\n\n### SOW已确认传递给人天&资源评估的信息\n${handoff.sow}` : ""]
     .filter(Boolean)
     .join("\n");
@@ -1504,6 +2638,7 @@ Global output requirements:
 - Do not invent project facts, quantities, dates, totals, roles, scope, acceptance criteria, scenarios, or deliverables.
 - If a required fact is unknown, mark it as pending confirmation in Chinese and explain which exact input is missing.
 - Explicit page inputs have the highest priority for the same or related fields. If explicitFixedPersonDays, explicitAnalysisAppCount, explicitAnalysisBusinessSystemCount, explicitAgentCount, explicitSyslogCount, explicitDailyDataVolume, or explicitRetentionDays is not unknown/not_applicable, use it instead of values inferred from the SOW summary.
+- If 当前步骤用户补充信息 is provided, treat it as explicit user input for this generation step. It can correct ambiguous or missing SOW/upstream facts; if it conflicts with a clearly stated source, keep both in the pending-confirmation list and explain the conflict.
 - For SIEM, UEBA, Flink, dashboard, custom development, and data migration: if the facts do not explicitly indicate presence, treat them as not included in current scope instead of pending confirmation.
 - Never output a complete total, schedule, WBS execution flow, or implementation chapter based on fake or guessed data.
 - For project-eval, skill-export, and project-implementation-program, local fallback and template-only estimation are disabled in this application. Missing prerequisites must produce a missing-parameter list, not a guessed result.
@@ -1512,7 +2647,7 @@ Global output requirements:
 - Completeness has priority over brevity for WBS and implementation program drafts. Do not omit required chapters, tables, acceptance assumptions, schedule basis, or deployment basis merely to shorten the answer.
 
 SOW标准输入源：
-${sowSource}`;
+${sowSource}${supplementPromptBlock("当前步骤用户补充信息", supplement)}`;
 
   if (kind === "personDay") {
     return `${common}
@@ -1577,13 +2712,16 @@ ${hardwareDraft}
 skill-export标准流程：
 1. 必须承接人天评估，不得自己编造总工期；缺少总人天/总人月时，只输出“无法生成正式排期”的缺失参数清单和可生成的WBS骨架。
 2. 1人月=22个工作日；按工作日计算，排除周末和中国法定节假日。
-3. 标准阶段为7个：项目启动、需求调研、数据接入与部署、场景规则交付、成果汇报培训、上线试运行、项目验收。不要单独生成“数据迁移”阶段；涉及迁移、导入、接入、部署的任务归入“数据接入与部署”。
+3. 标准阶段为7个：项目启动、需求调研、数据接入与部署、场景规则交付、成果汇报与培训、上线试运行、项目验收。不要单独生成“数据迁移”阶段；涉及迁移、导入、接入、部署的任务归入“数据接入与部署”。
 4. 试运行任务必须来自SOW正文或人天评估结果；人天评估参数区不再提供试运行开关，没有明确包含试运行时不得添加试运行任务。
 5. 详细计划表必须严格15列且顺序不能错位：编号、类型、任务、里程碑（是/否）、计划开始、计划结束、工期、状态、进度、责任人、执行者、前置任务、输出成果、延迟天数、备注。后续“确认并生成项目执行流”只识别这张15列表，不能只输出WBS骨架。
 6. 里程碑列中里程碑任务必须写“里程碑”，非里程碑留空。
 7. 责任人只使用“项目经理”和“实施工程师”，除非SOW或人天评估明确给出其他角色。
-8. 输出必须直接展示：WBS任务清单、详细计划表、文本甘特图时间轴、里程碑节点列表、传递给实施方案的计划摘要。
-9. 如果缺少入场日期，可以用当前日期作为“计划生成默认起点”但必须在假设中标注；如果缺少总人天，日期列写“待确认”，不要编造日期。
+8. 编号规则：主任务必须使用 x.0 编号（1.0、2.0、3.0...），子任务从 x.1 开始；不要生成只有整数编号的阶段行。阶段只写入阶段/归属字段，不作为任务标题。
+9. 待确认项、缺失参数、假设约束只能放在“缺失参数清单与待确认问题”章节，严禁放入 WBS任务清单或详细计划表。
+10. “成果汇报与培训”阶段只生成主任务“项目成果汇报与培训”和子任务“项目成果汇报与基础操作培训”；只有 SOW 明确要求深度培训时，才增加“采集规则与分析规则专项培训”，不要生成“成果汇报与深度培训”这种合并任务。
+11. 输出必须直接展示：WBS任务清单、详细计划表、文本甘特图时间轴、里程碑节点列表、传递给实施方案的计划摘要。
+12. 如果缺少入场日期，可以用当前日期作为“计划生成默认起点”但必须在假设中标注；如果缺少总人天，日期列写“待确认”，不要编造日期。
 
 输出结构：
 ## WBS分解与实施计划表
@@ -1689,9 +2827,12 @@ ${workflow.hardwareAssessment.content || "未生成硬件资源评估。"}
 2. 计划表列结构必须包含：编号、类型、任务、里程碑（是/否）、计划开始、计划结束、工期、状态、进度、责任人、执行者、前置任务、输出成果、延迟天数、备注。
 3. 里程碑列中里程碑任务标注为“里程碑”，非里程碑留空。
 4. 按工作日推算工期，1人月=22个工作日；如SOW或人天评估缺少总工期，必须标注“待确认”。
-5. 项目阶段采用：项目启动、需求调研、数据接入与部署、场景规则交付、成果汇报培训、上线试运行、项目验收。不要单独生成“数据迁移”阶段；涉及迁移、导入、接入、部署的任务归入“数据接入与部署”。
-6. WBS和计划必须承接人天评估结论，硬件资源评估用于安排资源准备、部署规模确认和客户待确认任务。
-7. 输出最后必须给出“传递给实施方案的计划摘要”。`;
+5. 项目阶段采用：项目启动、需求调研、数据接入与部署、场景规则交付、成果汇报与培训、上线试运行、项目验收。不要单独生成“数据迁移”阶段；涉及迁移、导入、接入、部署的任务归入“数据接入与部署”。
+6. 编号规则：主任务必须使用 x.0 编号（1.0、2.0、3.0...），子任务从 x.1 开始；不要生成只有整数编号的阶段行。阶段只写入阶段/归属字段，不作为任务标题。
+7. 待确认项、缺失参数、假设约束只能放在独立章节，不能作为任务写入 WBS 表或计划表。
+8. “成果汇报与培训”阶段不要生成“成果汇报与深度培训”合并任务；深度培训只有输入明确要求时才作为专项培训子任务。
+9. WBS和计划必须承接人天评估结论，硬件资源评估用于安排资源准备和部署规模确认，不要把硬件缺失参数转成项目任务。
+10. 输出最后必须给出“传递给实施方案的计划摘要”。`;
   }
 
   return `${shared}
@@ -1737,6 +2878,18 @@ export async function generateDeliveryDraft(
     }
   }
 
+  const localDraft = renderLocalDeliveryDraft(kind, project, workflow);
+  if (!config && localDraft) {
+    console.info("[AI生成] 未配置模型，已使用本地确定性草稿生成", {
+      kind,
+      outputChars: localDraft.length,
+    });
+    return {
+      content: cleanInternalPlaceholders(localDraft, project, workflow),
+      model: `local-${kind}-draft-kernel`,
+    };
+  }
+
   const modelName = config?.model || "未配置模型";
   try {
     if (!config) {
@@ -1756,6 +2909,18 @@ export async function generateDeliveryDraft(
       : await callConfiguredModel(config, messages, callOptions);
     return { content: cleanInternalPlaceholders(content, project, workflow), model: modelName };
   } catch (error) {
+    if (localDraft) {
+      console.warn("[AI生成] 远程生成失败，已使用本地确定性草稿兜底", {
+        kind,
+        model: modelName,
+        error: error instanceof Error ? error.message : error,
+        outputChars: localDraft.length,
+      });
+      return {
+        content: cleanInternalPlaceholders(localDraft, project, workflow),
+        model: `local-${kind}-draft-kernel`,
+      };
+    }
     console.error("[AI生成] 远程生成失败，已停止生成，避免输出无效草稿", {
       kind,
       model: modelName,

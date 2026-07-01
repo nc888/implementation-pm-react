@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import type { AppState, PageKey, Project } from "../../types";
 import { calcProjectMetrics } from "../../services/contextBuilder";
+import { activeProjects, isArchivedProject } from "../../services/projectStatus";
 import { renderNavItems } from "./shared";
 import type { NavItem, PrimarySection } from "./types";
 
@@ -60,6 +61,8 @@ export function ProjectSwitchSidebarBlock({
 }) {
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const currentMetrics = calcProjectMetrics(state, project);
+  const selectableProjects = activeProjects(state);
+  const archived = isArchivedProject(project);
 
   return (
     <>
@@ -84,14 +87,14 @@ export function ProjectSwitchSidebarBlock({
             <span className="project-select-copy">
               <strong>{project.name}</strong>
               <small>
-                {project.client} · {project.phase} · {currentMetrics.completionRate}%
+                {project.client} · {project.phase} · {currentMetrics.completionRate}%{archived ? " · 已归档" : ""}
               </small>
             </span>
             <ChevronDown aria-hidden="true" />
           </button>
           {projectMenuOpen ? (
             <div className="project-select-menu" role="listbox" aria-label="选择项目">
-              {state.projects.map((item) => {
+              {selectableProjects.map((item) => {
                 const metrics = calcProjectMetrics(state, item);
                 const selected = item.id === project.id;
                 return (
@@ -116,6 +119,7 @@ export function ProjectSwitchSidebarBlock({
                   </button>
                 );
               })}
+              {!selectableProjects.length ? <div className="project-select-empty">暂无在管项目</div> : null}
             </div>
           ) : null}
         </div>

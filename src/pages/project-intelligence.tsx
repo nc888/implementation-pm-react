@@ -5,6 +5,7 @@ import { calcProjectMetrics, getProject } from "../services/contextBuilder";
 import type { AiService } from "../services/aiService";
 import { assistantSessionMessages, normalizeAssistantScope } from "../services/assistantSessions";
 import { buildAssistantDataSnapshot, buildFullProjectAssistantSnapshot } from "../services/assistantProjectDataService";
+import { activeProjects } from "../services/projectStatus";
 import { Card } from "../components/ui";
 import { RichMessage } from "./page-shared";
 
@@ -25,7 +26,7 @@ function displayAssistantContent(content: string) {
 
 function assistantGreeting(scope: AssistantScope) {
   return scope === "all"
-    ? "已进入所有项目模式。你可以汇总全平台进度、风险、逾期、交付物，也可以下达明确的跨项目数据变更指令。"
+    ? "已进入所有在管项目模式。你可以汇总全平台进度、风险、逾期、交付物，也可以下达明确的跨项目数据变更指令。"
     : compactAssistantGreeting;
 }
 
@@ -65,7 +66,7 @@ export function AssistantPage({
     sessionMessages.length > 0
       ? sessionMessages
       : [{ id: `assistant-greeting-${scope}-${project.id}`, role: "assistant" as const, content: assistantGreeting(scope), createdAt: "" }];
-  const projectSummaries = state.projects.map((item) => {
+  const projectSummaries = activeProjects(state).map((item) => {
     const projectMetrics = calcProjectMetrics(state, item);
     const projectSnapshot = buildFullProjectAssistantSnapshot(state, item);
     return { project: item, metrics: projectMetrics, snapshot: projectSnapshot };

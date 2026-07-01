@@ -38,6 +38,7 @@ import {
 import type {
   AppState,
   Deliverable,
+  DeliverableBulkPatch,
   PageKey,
   ProjectImplementationMode,
   RiskIssue,
@@ -1484,12 +1485,14 @@ export function ListPage({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [ledgerPreferences, setLedgerPreferences] = useState(() => readTaskLedgerPreferences(project.id));
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  const [bulkStatus, setBulkStatus] = useState<TaskStatus | "">("");
   const [bulkOwner, setBulkOwner] = useState("");
   const [bulkStage, setBulkStage] = useState("");
   const [bulkPriority, setBulkPriority] = useState<Task["priority"] | "">("");
   const [bulkStartDate, setBulkStartDate] = useState("");
   const [bulkDueDate, setBulkDueDate] = useState("");
   const [bulkProgress, setBulkProgress] = useState("");
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const hideDone = ledgerPreferences.hideDone;
   const quickFilter = ledgerPreferences.quickFilter;
@@ -1510,7 +1513,7 @@ export function ListPage({
   const partlySelected = selectedCount > 0 && selectedCount < editableNodes.length;
   const stageOptions = stageDefinitionsForProject(state, project.id);
   const ownerOptions = Array.from(new Set(tasks.map((task) => task.owner.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right, "zh-CN"));
-  const hasBulkPatch = Boolean(bulkOwner.trim() || bulkStage || bulkPriority || bulkStartDate || bulkDueDate || bulkProgress.trim());
+  const hasBulkPatch = Boolean(bulkStatus || bulkOwner.trim() || bulkStage || bulkPriority || bulkStartDate || bulkDueDate || bulkProgress.trim());
   const quickFilterCounts = new Map<TaskLedgerQuickFilter, number>(
     taskLedgerQuickFilters.map((filter) => [filter.value, nodes.filter((node) => taskMatchesLedgerFilter(node, filter.value, today, week)).length]),
   );
@@ -1547,6 +1550,13 @@ export function ListPage({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isTextEditingTarget(event.target)) return;
       const key = event.key.toLowerCase();
+      if (bulkDialogOpen) {
+        if (key === "escape") {
+          event.preventDefault();
+          setBulkDialogOpen(false);
+        }
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && key === "a") {
         event.preventDefault();
         setSelectedTaskIds(new Set(editableNodeIds));
@@ -1579,7 +1589,7 @@ export function ListPage({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [editableNodeIdKey, onAddTask, onTaskStatuses, selectedCount, selectedKey]);
+  }, [bulkDialogOpen, editableNodeIdKey, onAddTask, onTaskStatuses, selectedCount, selectedKey]);
 
   const toggleSelection = (taskId: string, checked: boolean) => {
     setSelectedTaskIds((current) => {
@@ -1607,13 +1617,8 @@ export function ListPage({
     });
   };
 
-  const applyBulkStatus = (status: TaskStatus) => {
-    if (!selectedCount) return;
-    onTaskStatuses(selectedIds, status);
-    setSelectedTaskIds(new Set());
-  };
-
   const resetBulkFields = () => {
+    setBulkStatus("");
     setBulkOwner("");
     setBulkStage("");
     setBulkPriority("");
@@ -1622,10 +1627,18 @@ export function ListPage({
     setBulkProgress("");
   };
 
+  useEffect(() => {
+    if (bulkDialogOpen && !selectedCount) {
+      setBulkDialogOpen(false);
+      resetBulkFields();
+    }
+  }, [bulkDialogOpen, selectedCount]);
+
   const applyBulkFields = () => {
     if (!selectedCount || !hasBulkPatch) return;
     const patch: TaskBulkPatch = {};
     const owner = bulkOwner.trim();
+    if (bulkStatus) patch.status = bulkStatus;
     if (owner) patch.owner = owner;
     if (bulkStage) patch.stage = bulkStage;
     if (bulkPriority) patch.priority = bulkPriority;
@@ -1638,6 +1651,8 @@ export function ListPage({
     if (!Object.keys(patch).length) return;
     onTaskBatch(selectedIds, patch);
     resetBulkFields();
+    setBulkDialogOpen(false);
+    setSelectedTaskIds(new Set());
   };
 
   const renderStatusCell = (node: TaskNode) => {
@@ -1720,122 +1735,156 @@ export function ListPage({
               </button>
             ))}
           </div>
-          <label className="task-filter-toggle">
-            <input
-              type="checkbox"
-              checked={hideDone}
-              onChange={(event) => setLedgerPreferences((current) => ({ ...current, hideDone: event.currentTarget.checked }))}
-            />
-            <span>隐藏完成</span>
-            {hiddenDoneCount ? <small>{hiddenDoneCount} 项</small> : null}
-          </label>
-          <div className={`task-selection-summary ${selectedCount ? "active" : ""}`}>
-            <strong>{selectedCount ? `已选 ${selectedCount}` : "未选择"}</strong>
-            <span>{editableNodes.length ? `当前视图 ${editableNodes.length} 个可执行` : "当前视图无可执行子任务"}</span>
+          <div className="task-ledger-actions">
+            <button
+              type="button"
+              className={`task-toolbar-action ${hideDone ? "active" : ""}`}
+              aria-pressed={hideDone}
+              onClick={() => setLedgerPreferences((current) => ({ ...current, hideDone: !current.hideDone }))}
+            >
+              <Check aria-hidden={true} />
+              <span>隐藏完成</span>
+              {hiddenDoneCount ? <strong>{hiddenDoneCount}</strong> : null}
+            </button>
+            <button
+              type="button"
+              className="task-toolbar-action primary"
+              disabled={!selectedCount}
+              title={selectedCount ? `批量修改 ${selectedCount} 项任务` : `当前视图 ${editableNodes.length} 个可执行任务`}
+              onClick={() => {
+                if (selectedCount) setBulkDialogOpen(true);
+              }}
+            >
+              <PencilLine aria-hidden={true} />
+              <span>{selectedCount ? `已选 ${selectedCount}` : "批量修改"}</span>
+              <strong>{selectedCount ? "批量修改" : `${editableNodes.length} 可执行`}</strong>
+            </button>
           </div>
         </div>
-        <div className={`task-bulk-panel ${selectedCount ? "active" : ""}`}>
-          <span className="task-bulk-label">批量</span>
-          {selectedCount ? (
-            <>
-              <select
-                value=""
-                aria-label="批量修改任务状态"
-                onChange={(event) => {
-                  const status = event.currentTarget.value as TaskStatus;
-                  if (status) applyBulkStatus(status);
-                  event.currentTarget.value = "";
-                }}
-              >
-                <option value="">状态</option>
-                {statusColumns.map(([status, label], index) => (
-                  <option key={status} value={status}>
-                    {index + 1}. {label}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="text"
-                list="task-bulk-owner-options"
-                value={bulkOwner}
-                placeholder="负责人"
-                aria-label="批量设置任务负责人"
-                onChange={(event) => setBulkOwner(event.currentTarget.value)}
-              />
-              <datalist id="task-bulk-owner-options">
-                {ownerOptions.map((owner) => (
-                  <option key={owner} value={owner} />
-                ))}
-              </datalist>
-              <select
-                value={bulkStage}
-                aria-label="批量设置任务阶段"
-                onChange={(event) => setBulkStage(event.currentTarget.value)}
-              >
-                <option value="">阶段</option>
-                {stageOptions.map((stage) => (
-                  <option key={stage.id} value={stage.id}>
-                    {stage.label}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={bulkPriority}
-                aria-label="批量设置任务优先级"
-                onChange={(event) => setBulkPriority(event.currentTarget.value as Task["priority"] | "")}
-              >
-                <option value="">优先级</option>
-                {(["高", "中", "低"] as Task["priority"][]).map((priority) => (
-                  <option key={priority} value={priority}>
-                    {priority}
-                  </option>
-                ))}
-              </select>
-              <DateField
-                value={bulkDueDate}
-                onChange={setBulkDueDate}
-                placeholder="截止日期"
-                ariaLabel="批量设置任务截止日期"
-                compact
-                hideLabel
-                showStepButtons={false}
-              />
-              <DateField
-                value={bulkStartDate}
-                onChange={setBulkStartDate}
-                placeholder="开始日期"
-                ariaLabel="批量设置任务开始日期"
-                compact
-                hideLabel
-                showStepButtons={false}
-              />
-              <input
-                type="number"
-                min="0"
-                max="100"
-                value={bulkProgress}
-                placeholder="%"
-                aria-label="批量设置任务进度百分比"
-                onChange={(event) => setBulkProgress(event.currentTarget.value)}
-              />
-              <button type="button" className="button ghost" disabled={!hasBulkPatch} onClick={applyBulkFields}>
-                应用
-              </button>
-              <button type="button" className="button ghost" onClick={() => setSelectedTaskIds(new Set())}>
-                清空
-              </button>
-            </>
-          ) : (
-            <>
-              <span className="task-bulk-empty">选择子任务后可批量调整状态、负责人、阶段、日期和进度。</span>
-              <button type="button" className="button ghost" disabled={!editableNodes.length} onClick={() => setSelectedTaskIds(new Set(editableNodeIds))}>
-                选择当前视图
-              </button>
-            </>
-          )}
-        </div>
-        <span className="task-shortcut-hint">Ctrl/Cmd+A 选择当前视图 · 1-5 改状态 · N 新建 · Esc 清空 · F/O/C/B/H/W 切视图</span>
       </div>
+      {bulkDialogOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal-panel compact task-bulk-dialog" role="dialog" aria-modal="true" aria-labelledby="taskBulkDialogTitle">
+            <header className="modal-header">
+              <div>
+                <h3 id="taskBulkDialogTitle">批量修改任务</h3>
+                <p>{selectedCount} 项已选择，仅填写需要变更的字段。</p>
+              </div>
+              <button type="button" className="icon-button" aria-label="关闭批量修改" onClick={() => setBulkDialogOpen(false)}>
+                <X aria-hidden={true} />
+              </button>
+            </header>
+            <div className="modal-form">
+              <div className="form-grid task-bulk-form-grid">
+                <label>
+                  状态
+                  <select
+                    value={bulkStatus}
+                    aria-label="批量修改任务状态"
+                    onChange={(event) => setBulkStatus(event.currentTarget.value as TaskStatus | "")}
+                  >
+                    <option value="">不修改</option>
+                    {statusColumns.map(([status, label], index) => (
+                      <option key={status} value={status}>
+                        {index + 1}. {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  负责人
+                  <input
+                    type="text"
+                    list="task-bulk-owner-options"
+                    value={bulkOwner}
+                    placeholder="不修改"
+                    aria-label="批量设置任务负责人"
+                    onChange={(event) => setBulkOwner(event.currentTarget.value)}
+                  />
+                </label>
+                <datalist id="task-bulk-owner-options">
+                  {ownerOptions.map((owner) => (
+                    <option key={owner} value={owner} />
+                  ))}
+                </datalist>
+                <label>
+                  阶段
+                  <select value={bulkStage} aria-label="批量设置任务阶段" onChange={(event) => setBulkStage(event.currentTarget.value)}>
+                    <option value="">不修改</option>
+                    {stageOptions.map((stage) => (
+                      <option key={stage.id} value={stage.id}>
+                        {stage.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  优先级
+                  <select
+                    value={bulkPriority}
+                    aria-label="批量设置任务优先级"
+                    onChange={(event) => setBulkPriority(event.currentTarget.value as Task["priority"] | "")}
+                  >
+                    <option value="">不修改</option>
+                    {(["高", "中", "低"] as Task["priority"][]).map((priority) => (
+                      <option key={priority} value={priority}>
+                        {priority}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  开始日期
+                  <DateField
+                    value={bulkStartDate}
+                    onChange={setBulkStartDate}
+                    placeholder="不修改"
+                    ariaLabel="批量设置任务开始日期"
+                    compact
+                    hideLabel
+                    showStepButtons={false}
+                  />
+                </label>
+                <label>
+                  截止日期
+                  <DateField
+                    value={bulkDueDate}
+                    onChange={setBulkDueDate}
+                    placeholder="不修改"
+                    ariaLabel="批量设置任务截止日期"
+                    compact
+                    hideLabel
+                    showStepButtons={false}
+                  />
+                </label>
+                <label>
+                  进度
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={bulkProgress}
+                    placeholder="不修改"
+                    aria-label="批量设置任务进度百分比"
+                    onChange={(event) => setBulkProgress(event.currentTarget.value)}
+                  />
+                </label>
+              </div>
+              <footer className="modal-actions">
+                <button type="button" className="button ghost" onClick={resetBulkFields} disabled={!hasBulkPatch}>
+                  清空变更
+                </button>
+                <button type="button" className="button ghost" onClick={() => setBulkDialogOpen(false)}>
+                  取消
+                </button>
+                <button type="button" className="button primary" onClick={applyBulkFields} disabled={!hasBulkPatch}>
+                  应用修改
+                </button>
+              </footer>
+            </div>
+          </section>
+        </div>
+      ) : null}
       <table className="table compact-table task-ledger-table">
         <thead>
           <tr>
@@ -2326,6 +2375,8 @@ export function DeliverablesPage({
   onSaveDeliverable,
   onSaveDeliverableStoragePath,
   onDeleteDeliverable,
+  onBatchUpdateDeliverables,
+  onBatchDeleteDeliverables,
 }: {
   state: AppState;
   onAddDeliverable: () => void;
@@ -2333,6 +2384,8 @@ export function DeliverablesPage({
   onSaveDeliverable: (deliverable: Deliverable) => Promise<void>;
   onSaveDeliverableStoragePath: (projectId: string, path: string) => Promise<void>;
   onDeleteDeliverable: (deliverableId: string) => void;
+  onBatchUpdateDeliverables: (deliverableIds: string[], patch: DeliverableBulkPatch) => Promise<void>;
+  onBatchDeleteDeliverables: (deliverableIds: string[]) => void;
 }) {
   const project = getProject(state);
   const tasks = projectTasks(state, project.id);
@@ -2343,17 +2396,36 @@ export function DeliverablesPage({
   const [storageMessage, setStorageMessage] = useState<{ tone: "success" | "warning" | "danger"; text: string } | null>(null);
   const [directoryDialogOpen, setDirectoryDialogOpen] = useState(false);
   const [directoryChoosing, setDirectoryChoosing] = useState(false);
+  const [selectedDeliverableIds, setSelectedDeliverableIds] = useState<Set<string>>(new Set());
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [bulkStatus, setBulkStatus] = useState("");
+  const [bulkAcceptance, setBulkAcceptance] = useState("");
+  const [bulkDueDate, setBulkDueDate] = useState("");
+  const [bulkAttachmentRequirement, setBulkAttachmentRequirement] = useState<Deliverable["attachmentRequirement"] | "">("");
+  const selectAllRef = useRef<HTMLInputElement>(null);
   const deliverableAcceptanceOptions = ["待确认", "待验收", "待评审", "客户确认", "客户验收", "内部确认", "已验收", "未提交"];
+  const deliverableStatusOptions = ["草稿", "待提交", "已提交", "已更新", "待评审", "待客户签字", "已归档"];
   const attachmentUploadStateOptions: Array<{ value: NonNullable<Deliverable["attachmentRequirement"]>; label: string }> = [
     { value: "required", label: "未上传" },
     { value: "none", label: "无需上传" },
   ];
+  const deliverableIds = deliverables.map((item) => item.id);
+  const deliverableIdKey = deliverableIds.join("|");
+  const selectedDeliverableList = deliverables.filter((item) => selectedDeliverableIds.has(item.id));
+  const selectedDeliverableIdList = selectedDeliverableList.map((item) => item.id);
+  const selectedDeliverableCount = selectedDeliverableIdList.length;
+  const allDeliverablesSelected = deliverables.length > 0 && selectedDeliverableCount === deliverables.length;
+  const partlyDeliverablesSelected = selectedDeliverableCount > 0 && selectedDeliverableCount < deliverables.length;
+  const hasDeliverableBulkPatch = Boolean(bulkStatus || bulkAcceptance || bulkDueDate || bulkAttachmentRequirement);
 
   useEffect(() => {
     let cancelled = false;
     const cachedRecord = getCachedDeliverableDirectory(project.id);
     setDirectoryHandle(cachedRecord?.handle || null);
     setStorageMessage(null);
+    setSelectedDeliverableIds(new Set());
+    resetDeliverableBulkFields();
+    setBulkDialogOpen(false);
     if (!cachedRecord?.handle) {
       void loadDeliverableDirectoryHandle(project.id).then((record) => {
         if (cancelled || !record?.handle) return;
@@ -2367,6 +2439,25 @@ export function DeliverablesPage({
       cancelled = true;
     };
   }, [project.id]);
+
+  useEffect(() => {
+    const visibleIdSet = new Set(deliverableIds);
+    setSelectedDeliverableIds((current) => {
+      const next = new Set([...current].filter((id) => visibleIdSet.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [deliverableIdKey]);
+
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = partlyDeliverablesSelected;
+  }, [partlyDeliverablesSelected]);
+
+  useEffect(() => {
+    if (bulkDialogOpen && !selectedDeliverableCount) {
+      setBulkDialogOpen(false);
+      resetDeliverableBulkFields();
+    }
+  }, [bulkDialogOpen, selectedDeliverableCount]);
 
   const resolveLinkedTask = (item: Deliverable) => (item.linkedTaskId ? taskById.get(item.linkedTaskId) : undefined) || taskByCode.get(item.code);
   const currentStorageLabel = project.deliverableStoragePath || getDeliverableDirectoryPathLabel(project.id) || directoryHandle?.name || "未配置保存路径";
@@ -2407,6 +2498,48 @@ export function DeliverablesPage({
     openOn?: "click" | "double";
     onChange: (value: string) => void;
   }) => <InlineChoiceEditor value={value} options={options} label={label} tone={tone} minWidth={minWidth} openOn={openOn} onChange={onChange} />;
+
+  function resetDeliverableBulkFields() {
+    setBulkStatus("");
+    setBulkAcceptance("");
+    setBulkDueDate("");
+    setBulkAttachmentRequirement("");
+  }
+
+  const toggleDeliverableSelection = (deliverableId: string, checked: boolean) => {
+    setSelectedDeliverableIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(deliverableId);
+      } else {
+        next.delete(deliverableId);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllDeliverables = (checked: boolean) => {
+    setSelectedDeliverableIds(checked ? new Set(deliverableIds) : new Set());
+  };
+
+  const applyDeliverableBulkPatch = async () => {
+    if (!selectedDeliverableCount || !hasDeliverableBulkPatch) return;
+    const patch: DeliverableBulkPatch = {};
+    if (bulkStatus) patch.status = bulkStatus;
+    if (bulkAcceptance) patch.acceptance = bulkAcceptance;
+    if (bulkDueDate) patch.dueDate = bulkDueDate;
+    if (bulkAttachmentRequirement) patch.attachmentRequirement = bulkAttachmentRequirement;
+    if (!Object.keys(patch).length) return;
+    try {
+      await onBatchUpdateDeliverables(selectedDeliverableIdList, patch);
+      resetDeliverableBulkFields();
+      setBulkDialogOpen(false);
+      setSelectedDeliverableIds(new Set());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "批量修改交付物失败。";
+      setStorageMessage({ tone: "danger", text: message });
+    }
+  };
 
   const chooseDirectory = async () => {
     setDirectoryChoosing(true);
@@ -2570,8 +2703,25 @@ export function DeliverablesPage({
           <Button tone="primary" onClick={onAddDeliverable}>新建交付物</Button>
         </div>
       </div>
+      <div className={`deliverable-bulk-toolbar ${selectedDeliverableCount ? "active" : ""}`} aria-live="polite">
+        <div className="deliverable-bulk-summary">
+          <strong>{selectedDeliverableCount ? `已选 ${selectedDeliverableCount}` : "未选择"}</strong>
+          <span>当前视图 {deliverables.length} 个交付物</span>
+        </div>
+        <div className="deliverable-bulk-actions">
+          <Button tone="ghost" disabled={!selectedDeliverableCount} onClick={() => setBulkDialogOpen(true)}>
+            <PencilLine aria-hidden="true" />
+            批量修改
+          </Button>
+          <Button tone="danger" disabled={!selectedDeliverableCount} onClick={() => onBatchDeleteDeliverables(selectedDeliverableIdList)}>
+            <X aria-hidden="true" />
+            批量删除
+          </Button>
+        </div>
+      </div>
       <table className="table compact-table deliverable-table">
         <colgroup>
+          <col className="deliverable-col-select" />
           <col className="deliverable-col-name" />
           <col className="deliverable-col-task" />
           <col className="deliverable-col-acceptance" />
@@ -2581,6 +2731,16 @@ export function DeliverablesPage({
         </colgroup>
         <thead>
           <tr>
+            <th className="deliverable-select-col">
+              <input
+                ref={selectAllRef}
+                type="checkbox"
+                checked={allDeliverablesSelected}
+                disabled={!deliverables.length}
+                aria-label="选择当前视图交付物"
+                onChange={(event) => toggleAllDeliverables(event.currentTarget.checked)}
+              />
+            </th>
             <th>交付物</th>
             <th>关联任务项</th>
             <th>验收</th>
@@ -2591,7 +2751,15 @@ export function DeliverablesPage({
         </thead>
         <tbody>
           {deliverables.map((item) => (
-            <tr key={item.id}>
+            <tr key={item.id} className={selectedDeliverableIds.has(item.id) ? "selected" : ""}>
+              <td className="deliverable-select-col">
+                <input
+                  type="checkbox"
+                  checked={selectedDeliverableIds.has(item.id)}
+                  aria-label={`选择交付物 ${item.name}`}
+                  onChange={(event) => toggleDeliverableSelection(item.id, event.currentTarget.checked)}
+                />
+              </td>
               <td className="deliverable-name-cell"><strong title={item.name}>{item.name}</strong></td>
               <td className="muted deliverable-linked-task">{renderLinkedTask(item)}</td>
               <td>
@@ -2616,10 +2784,89 @@ export function DeliverablesPage({
               </td>
             </tr>
           ))}
-          {!deliverables.length ? <tr><td colSpan={6} className="muted">没有匹配的交付物。</td></tr> : null}
+          {!deliverables.length ? <tr><td colSpan={7} className="muted">没有匹配的交付物。</td></tr> : null}
         </tbody>
       </table>
     </Card>
+    {bulkDialogOpen ? (
+      <div className="modal-backdrop" role="presentation">
+        <section className="modal-panel compact deliverable-bulk-dialog" role="dialog" aria-modal="true" aria-labelledby="deliverableBulkDialogTitle">
+          <header className="modal-header">
+            <div>
+              <h3 id="deliverableBulkDialogTitle">批量修改交付物</h3>
+              <p>{selectedDeliverableCount} 个已选择，仅填写需要变更的字段。</p>
+            </div>
+            <button type="button" className="icon-button" aria-label="关闭批量修改" onClick={() => setBulkDialogOpen(false)}>
+              <X aria-hidden="true" />
+            </button>
+          </header>
+          <div className="modal-form">
+            <div className="form-grid deliverable-bulk-form-grid">
+              <label>
+                状态
+                <select value={bulkStatus} aria-label="批量设置交付物状态" onChange={(event) => setBulkStatus(event.currentTarget.value)}>
+                  <option value="">不修改</option>
+                  {deliverableStatusOptions.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                验收
+                <select value={bulkAcceptance} aria-label="批量设置交付物验收状态" onChange={(event) => setBulkAcceptance(event.currentTarget.value)}>
+                  <option value="">不修改</option>
+                  {deliverableAcceptanceOptions.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                附件要求
+                <select
+                  value={bulkAttachmentRequirement}
+                  aria-label="批量设置交付物附件要求"
+                  onChange={(event) => setBulkAttachmentRequirement(event.currentTarget.value as Deliverable["attachmentRequirement"] | "")}
+                >
+                  <option value="">不修改</option>
+                  {attachmentUploadStateOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                截止日期
+                <DateField
+                  value={bulkDueDate}
+                  onChange={setBulkDueDate}
+                  placeholder="不修改"
+                  ariaLabel="批量设置交付物截止日期"
+                  compact
+                  hideLabel
+                  showStepButtons={false}
+                />
+              </label>
+            </div>
+            <footer className="modal-actions">
+              <button type="button" className="button ghost" onClick={resetDeliverableBulkFields} disabled={!hasDeliverableBulkPatch}>
+                清空变更
+              </button>
+              <button type="button" className="button ghost" onClick={() => setBulkDialogOpen(false)}>
+                取消
+              </button>
+              <button type="button" className="button primary" onClick={() => void applyDeliverableBulkPatch()} disabled={!hasDeliverableBulkPatch}>
+                应用修改
+              </button>
+            </footer>
+          </div>
+        </section>
+      </div>
+    ) : null}
     {directoryDialogOpen ? (
       <DeliverableDirectorySetupDialog
         projectName={project.name}

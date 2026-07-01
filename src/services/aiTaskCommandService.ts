@@ -1,4 +1,5 @@
 import type { AppState, AssistantScope, Project, Task, TaskStatus } from "../types";
+import { activeProjectIds } from "./projectStatus";
 
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
@@ -68,8 +69,9 @@ export function looksLikeTaskCommandRequest(question: string) {
 
 export function buildTaskCommandExtractionMessages(state: AppState, project: Project, question: string, scope: AssistantScope = "project"): ChatMessage[] {
   const projectNameById = new Map(state.projects.map((item) => [item.id, item.name]));
+  const activeIds = activeProjectIds(state);
   const tasks = state.tasks
-    .filter((task) => scope === "all" || task.projectId === project.id)
+    .filter((task) => (scope === "all" ? activeIds.has(task.projectId) : task.projectId === project.id))
     .slice(0, 120)
     .map(
       (task) =>
@@ -167,7 +169,8 @@ export function inferRuleBasedTaskCommandPlan(question: string): AiTaskCommandPl
 
 export function applyTaskCommandPlan(state: AppState, projectId: string | "all", plan: AiTaskCommandPlan): AiTaskCommandExecution {
   const now = new Date().toISOString();
-  const projectTasks = state.tasks.filter((task) => projectId === "all" || task.projectId === projectId);
+  const activeIds = activeProjectIds(state);
+  const projectTasks = state.tasks.filter((task) => (projectId === "all" ? activeIds.has(task.projectId) : task.projectId === projectId));
   const projectNameById = new Map(state.projects.map((item) => [item.id, item.name]));
   const changedById = new Map<string, AiTaskCommandExecution["changedTasks"][number]>();
   const unmatchedTargets: string[] = [];
@@ -179,7 +182,7 @@ export function applyTaskCommandPlan(state: AppState, projectId: string | "all",
   });
 
   const tasks = state.tasks.map((task) => {
-    if (projectId !== "all" && task.projectId !== projectId) return task;
+    if (projectId === "all" ? !activeIds.has(task.projectId) : task.projectId !== projectId) return task;
     let next = task;
     const before = taskSnapshot(task);
     const fields = new Set<string>();

@@ -2,12 +2,14 @@ import type {
   AppState,
   AssistantScope,
   Deliverable,
+  DeliveryWorkflow,
   Project,
   ProjectMilestone,
   RiskIssue,
   ScopeItem,
   Task,
   TaskStatus,
+  WeeklyReport,
 } from "../types";
 import {
   buildTaskTree,
@@ -27,12 +29,13 @@ import {
   stageLabel,
   taskStatusLabels,
 } from "./contextBuilder";
-import { getWorkflow } from "./deliveryWorkflowService";
+import { getWorkflow, upsertWorkflow } from "./deliveryWorkflowService";
 import { ruleBasedAiService } from "./aiService";
+import { activeProjects } from "./projectStatus";
 
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
-type EntityType = "project" | "tasks" | "scopeItems" | "deliverables" | "risksIssues" | "milestones";
+type EntityType = "project" | "tasks" | "scopeItems" | "deliverables" | "risksIssues" | "milestones" | "weeklyReports" | "workflow";
 type TargetScope = "all" | "open" | "matching";
 
 type CommandTarget = {
@@ -75,7 +78,9 @@ export type AiProjectDataCommandAction = {
     | "updateScopeItems"
     | "updateDeliverables"
     | "updateRisksIssues"
-    | "updateMilestones";
+    | "updateMilestones"
+    | "updateWeeklyReports"
+    | "updateWorkflow";
   target?: CommandTarget;
   search?: string;
   replacement?: string;
@@ -170,6 +175,52 @@ const milestoneFieldLabels: Record<string, string> = {
   description: "说明",
 };
 
+const weeklyReportFieldLabels: Record<string, string> = {
+  audience: "周报对象",
+  reportDate: "周报日期",
+  title: "标题",
+  content: "正文",
+  projectOwner: "项目负责人",
+  implementationPersonnel: "实施人员",
+  implementationMode: "实施方式",
+  projectStatus: "项目状态",
+  recipientsTo: "收件人",
+  recipientsCc: "抄送",
+  mailSubject: "邮件主题",
+  mailDraftStatus: "邮件草稿状态",
+  markdownArchiveStatus: "归档状态",
+};
+
+const workflowFieldLabels: Record<string, string> = {
+  sowContent: "SOW内容",
+  sowFileName: "SOW文件名",
+  sowHandoff: "SOW传递信息",
+  personDayContent: "人天评估",
+  personDayHandoff: "人天评估传递信息",
+  hardwareContent: "硬件评估",
+  hardwareHandoff: "硬件评估传递信息",
+  wbsContent: "WBS计划",
+  wbsHandoff: "WBS传递信息",
+  implementationContent: "实施方案",
+  fixedPersonDays: "固定人天",
+  analysisAppCount: "分析APP套数",
+  analysisBusinessSystemCount: "分析业务系统套数",
+  agentCount: "Agent数量",
+  syslogCount: "Syslog数量",
+  dailyDataVolume: "日均数据量",
+  dailyDataUnit: "日均数据量单位",
+  peakFactor: "峰值系数",
+  singleNodeUsableTb: "单节点磁盘容量",
+  singleNodeCapacityUnit: "单节点磁盘容量单位",
+  nodeCount: "节点数",
+  retentionDays: "留存天数",
+  hasFixedPersonDays: "启用固定人天",
+  needsFlink: "是否需要Flink",
+  includesSiem: "是否包含SIEM",
+  includesUeba: "是否包含UEBA",
+  involvesDataMigration: "是否涉及数据迁移",
+};
+
 const textFields: Record<EntityType, string[]> = {
   project: ["name", "client", "phase", "health", "owner", "nextMilestone", "description"],
   tasks: ["title", "type", "stage", "dimension", "priority", "owner"],
@@ -177,6 +228,19 @@ const textFields: Record<EntityType, string[]> = {
   deliverables: ["name", "status", "acceptance", "attachmentRequirement", "attachmentName"],
   risksIssues: ["kind", "title", "severity", "status", "riskVisibility", "responsePlan"],
   milestones: ["title", "status", "description"],
+  weeklyReports: ["title", "content", "projectOwner", "implementationPersonnel", "implementationMode", "projectStatus", "recipientsTo", "recipientsCc", "mailSubject"],
+  workflow: [
+    "sowContent",
+    "sowFileName",
+    "sowHandoff",
+    "personDayContent",
+    "personDayHandoff",
+    "hardwareContent",
+    "hardwareHandoff",
+    "wbsContent",
+    "wbsHandoff",
+    "implementationContent",
+  ],
 };
 
 const entityLabels: Record<EntityType, string> = {
@@ -186,6 +250,8 @@ const entityLabels: Record<EntityType, string> = {
   deliverables: "交付物",
   risksIssues: "风险问题",
   milestones: "里程碑",
+  weeklyReports: "周报",
+  workflow: "AI生成草稿",
 };
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -272,7 +338,7 @@ export function buildFullProjectAssistantSnapshot(state: AppState, project: Proj
 }
 
 export function buildAllProjectsFullAssistantSnapshot(state: AppState) {
-  const projects = state.projects.map((project) => buildFullProjectAssistantSnapshot(state, project));
+  const projects = activeProjects(state).map((project) => buildFullProjectAssistantSnapshot(state, project));
   return {
     schemaVersion: "2.0",
     scope: "all-projects",
@@ -303,7 +369,7 @@ export function looksLikeProjectDataCommandRequest(question: string) {
   if (!text) return false;
   if (/(?:把|将)\s*.+?\s*(?:全部|都)?\s*(?:改成|改为|替换成|替换为)\s*.+/.test(text)) return true;
   const hasChangeVerb = /改|调整|更新|变更|设置|设为|改为|替换|标记|延期|推迟|提前|顺延|完成|关闭|新增|删除/.test(text);
-  const hasDataSignal = /项目|任务|事项|WBS|交付物|风险|问题|范围|SOW|阶段|里程碑|负责人|工程师|状态|进度|健康|客户|名称|人天|日期|验收|所有|全部|都/.test(text);
+  const hasDataSignal = /项目|任务|事项|WBS|交付物|风险|问题|范围|SOW|阶段|里程碑|负责人|工程师|状态|进度|健康|客户|名称|人天|日期|验收|周报|收件人|邮件|实施方案|硬件|草稿|所有|全部|都/.test(text);
   return hasChangeVerb && hasDataSignal;
 }
 
@@ -315,7 +381,7 @@ export function buildProjectDataCommandExtractionMessages(state: AppState, proje
       content: [
         "你是项目管理系统的数据变更指令解析器。只输出 JSON，不要输出 Markdown、解释或代码块。",
         "只有用户明确要求修改项目数据时才返回 mode=execute；询问、分析、解释、生成草稿时返回 mode=answer 且 actions=[]。",
-        "允许动作：replaceText、updateProject、updateTasks、updateScopeItems、updateDeliverables、updateRisksIssues、updateMilestones。",
+        "允许动作：replaceText、updateProject、updateTasks、updateScopeItems、updateDeliverables、updateRisksIssues、updateMilestones、updateWeeklyReports、updateWorkflow。",
         "replaceText 用于“把 X 都改成 Y / 替换 X 为 Y”，会在当前范围内按字段白名单替换文本。",
         "updateProject 可改 name、client、phase、health、owner、startDate、endDate、progress、nextMilestone、description、estimatedImplementationPersonDays、estimatedDevelopmentPersonDays。",
         "updateTasks 可改 code、title、type、status、stage、dimension、priority、owner、startDate、dueDate、progress，并支持 startShiftDays、dueShiftDays、startShiftMonths、dueShiftMonths。排序/调整顺序时优先修改 code；当前界面按计划日期、code、截止日期排序。",
@@ -324,6 +390,8 @@ export function buildProjectDataCommandExtractionMessages(state: AppState, proje
         "updateDeliverables 可改 name、status、acceptance、dueDate、attachmentRequirement、attachmentName、attachmentPath。",
         "updateRisksIssues 可改 kind、title、severity、status、riskVisibility、responsePlan、linkedTaskId。kind 只能 risk/issue，severity 只能 高/中/低，status 只能 open/tracking/closed，riskVisibility 只能 internal/external；external 风险/问题可进入客户周报。",
         "updateMilestones 可改 title、dueDate、status、description。",
+        "updateWeeklyReports 可改 audience、reportDate、title、content、projectOwner、implementationPersonnel、implementationMode、projectStatus、recipientsTo、recipientsCc、mailSubject、mailDraftStatus、markdownArchiveStatus。",
+        "updateWorkflow 可改 sowContent、sowFileName、sowHandoff、personDayContent、personDayHandoff、hardwareContent、hardwareHandoff、wbsContent、wbsHandoff、implementationContent，以及资源参数 hasFixedPersonDays、fixedPersonDays、analysisAppCount、analysisBusinessSystemCount、agentCount、syslogCount、dailyDataVolume、dailyDataUnit、peakFactor、singleNodeUsableTb、singleNodeCapacityUnit、nodeCount、retentionDays、needsFlink、includesSiem、includesUeba、involvesDataMigration。",
         "target.scope 可为 all/open/matching；指定记录时尽量用 id、code、title、name 或 query。当前项目范围下不要修改其他项目。",
         "日期必须是 YYYY-MM-DD。用户只写 MM-DD 时使用当前年份。状态枚举：任务 todo/doing/customer/blocked/done。",
         "返回格式示例1：{\"mode\":\"execute\",\"reply\":\"准备更新负责人\",\"actions\":[{\"type\":\"replaceText\",\"search\":\"接入工程师\",\"replacement\":\"刘悦好\",\"target\":{\"scope\":\"all\",\"entityTypes\":[\"project\",\"tasks\",\"scopeItems\",\"deliverables\",\"risksIssues\",\"milestones\"]}}]}",
@@ -453,6 +521,10 @@ export function applyProjectDataCommandPlan(state: AppState, projectId: string |
       next = applyCollectionUpdate(next, projectId, action, "risksIssues", selectRisksIssues, applyRiskChanges, changedRecords);
     } else if (action.type === "updateMilestones") {
       next = applyMilestoneUpdate(next, projectId, action, changedRecords);
+    } else if (action.type === "updateWeeklyReports") {
+      next = applyCollectionUpdate(next, projectId, action, "weeklyReports", selectWeeklyReports, applyWeeklyReportChanges, changedRecords);
+    } else if (action.type === "updateWorkflow") {
+      next = applyWorkflowUpdate(next, projectId, action, changedRecords);
     }
     if (changedRecords.length === beforeCount) unmatchedTargets.push(describeActionTarget(action));
   });
@@ -488,6 +560,8 @@ function normalizeActions(actions: unknown): AiProjectDataCommandAction[] {
     "updateDeliverables",
     "updateRisksIssues",
     "updateMilestones",
+    "updateWeeklyReports",
+    "updateWorkflow",
   ]);
   return actions
     .filter((action): action is AiProjectDataCommandAction => Boolean(action && typeof action === "object" && allowed.has((action as AiProjectDataCommandAction).type)))
@@ -583,6 +657,18 @@ function applyReplaceText(
   if (entityTypes.includes("milestones")) {
     next = replaceTextInMilestones(next, projectIds, action, search, replacement, changedRecords);
   }
+  if (entityTypes.includes("weeklyReports")) {
+    next = {
+      ...next,
+      weeklyReports: next.weeklyReports.map((report) => {
+        if (!projectIds.has(report.projectId)) return report;
+        return replaceTextInRecord(report, "weeklyReports", report.title || report.reportDate, projectName(next, report.projectId), action, search, replacement, changedRecords) as WeeklyReport;
+      }),
+    };
+  }
+  if (entityTypes.includes("workflow")) {
+    next = replaceTextInWorkflows(next, projectIds, action, search, replacement, changedRecords);
+  }
   return next;
 }
 
@@ -646,6 +732,114 @@ function replaceTextInMilestones(
   };
 }
 
+function workflowRecord(workflow: DeliveryWorkflow) {
+  return {
+    sowContent: workflow.sow.content,
+    sowFileName: workflow.sow.fileName,
+    sowHandoff: workflow.handoff.sow,
+    personDayContent: workflow.personDayAssessment.content,
+    personDayHandoff: workflow.handoff.personDay,
+    hardwareContent: workflow.hardwareAssessment.content,
+    hardwareHandoff: workflow.handoff.hardware,
+    wbsContent: workflow.wbsPlan.content,
+    wbsHandoff: workflow.handoff.wbs,
+    implementationContent: workflow.implementationPlan.content,
+    fixedPersonDays: workflow.resourceInputs.fixedPersonDays,
+    analysisAppCount: workflow.resourceInputs.analysisAppCount,
+    analysisBusinessSystemCount: workflow.resourceInputs.analysisBusinessSystemCount,
+    agentCount: workflow.resourceInputs.agentCount,
+    syslogCount: workflow.resourceInputs.syslogCount,
+    dailyDataVolume: workflow.resourceInputs.dailyDataVolume,
+    peakFactor: workflow.resourceInputs.peakFactor,
+    singleNodeUsableTb: workflow.resourceInputs.singleNodeUsableTb,
+    nodeCount: workflow.resourceInputs.nodeCount,
+    retentionDays: workflow.resourceInputs.retentionDays,
+  };
+}
+
+function applyWorkflowRecord(workflow: DeliveryWorkflow, record: Partial<Record<keyof ReturnType<typeof workflowRecord>, string>>): DeliveryWorkflow {
+  return {
+    ...workflow,
+    sow: {
+      ...workflow.sow,
+      content: record.sowContent ?? workflow.sow.content,
+      fileName: record.sowFileName ?? workflow.sow.fileName,
+      updatedAt: record.sowContent !== undefined || record.sowFileName !== undefined ? new Date().toISOString() : workflow.sow.updatedAt,
+    },
+    handoff: {
+      ...workflow.handoff,
+      sow: record.sowHandoff ?? workflow.handoff.sow,
+      personDay: record.personDayHandoff ?? workflow.handoff.personDay,
+      hardware: record.hardwareHandoff ?? workflow.handoff.hardware,
+      wbs: record.wbsHandoff ?? workflow.handoff.wbs,
+    },
+    personDayAssessment: {
+      ...workflow.personDayAssessment,
+      content: record.personDayContent ?? workflow.personDayAssessment.content,
+      status: record.personDayContent !== undefined ? "edited" : workflow.personDayAssessment.status,
+    },
+    hardwareAssessment: {
+      ...workflow.hardwareAssessment,
+      content: record.hardwareContent ?? workflow.hardwareAssessment.content,
+      status: record.hardwareContent !== undefined ? "edited" : workflow.hardwareAssessment.status,
+    },
+    wbsPlan: {
+      ...workflow.wbsPlan,
+      content: record.wbsContent ?? workflow.wbsPlan.content,
+      status: record.wbsContent !== undefined ? "edited" : workflow.wbsPlan.status,
+    },
+    implementationPlan: {
+      ...workflow.implementationPlan,
+      content: record.implementationContent ?? workflow.implementationPlan.content,
+      status: record.implementationContent !== undefined ? "edited" : workflow.implementationPlan.status,
+    },
+    resourceInputs: {
+      ...workflow.resourceInputs,
+      fixedPersonDays: record.fixedPersonDays ?? workflow.resourceInputs.fixedPersonDays,
+      analysisAppCount: record.analysisAppCount ?? workflow.resourceInputs.analysisAppCount,
+      analysisBusinessSystemCount: record.analysisBusinessSystemCount ?? workflow.resourceInputs.analysisBusinessSystemCount,
+      agentCount: record.agentCount ?? workflow.resourceInputs.agentCount,
+      syslogCount: record.syslogCount ?? workflow.resourceInputs.syslogCount,
+      dailyDataVolume: record.dailyDataVolume ?? workflow.resourceInputs.dailyDataVolume,
+      peakFactor: record.peakFactor ?? workflow.resourceInputs.peakFactor,
+      singleNodeUsableTb: record.singleNodeUsableTb ?? workflow.resourceInputs.singleNodeUsableTb,
+      nodeCount: record.nodeCount ?? workflow.resourceInputs.nodeCount,
+      retentionDays: record.retentionDays ?? workflow.resourceInputs.retentionDays,
+    },
+  };
+}
+
+function replaceTextInWorkflows(
+  state: AppState,
+  projectIds: Set<string>,
+  action: AiProjectDataCommandAction,
+  search: string,
+  replacement: string,
+  changedRecords: AiProjectDataCommandExecution["changedRecords"],
+) {
+  let next = state;
+  state.deliveryWorkflows.forEach((workflow) => {
+    if (!projectIds.has(workflow.projectId)) return;
+    const beforeRecord = workflowRecord(workflow);
+    const replaced = replaceTextInRecord(
+      beforeRecord,
+      "workflow",
+      "AI生成草稿",
+      projectName(state, workflow.projectId),
+      action,
+      search,
+      replacement,
+      changedRecords,
+    );
+    const patch: Partial<Record<keyof ReturnType<typeof workflowRecord>, string>> = {};
+    (Object.keys(beforeRecord) as Array<keyof ReturnType<typeof workflowRecord>>).forEach((field) => {
+      if (beforeRecord[field] !== replaced[field]) patch[field] = replaced[field];
+    });
+    if (Object.keys(patch).length) next = upsertWorkflow(next, applyWorkflowRecord(workflow, patch));
+  });
+  return next;
+}
+
 function applyProjectUpdate(
   state: AppState,
   projectId: string | "all",
@@ -678,7 +872,7 @@ function applyCollectionUpdate<T extends { id: string; projectId: string }>(
   state: AppState,
   projectId: string | "all",
   action: AiProjectDataCommandAction,
-  collection: "tasks" | "scopeItems" | "deliverables" | "risksIssues",
+  collection: "tasks" | "scopeItems" | "deliverables" | "risksIssues" | "weeklyReports",
   selector: (items: T[], target?: CommandTarget) => T[],
   applyChanges: (item: T, changes: Record<string, unknown>) => T,
   changedRecords: AiProjectDataCommandExecution["changedRecords"],
@@ -795,6 +989,54 @@ function applyMilestoneUpdate(
   };
 }
 
+function applyWorkflowUpdate(
+  state: AppState,
+  projectId: string | "all",
+  action: AiProjectDataCommandAction,
+  changedRecords: AiProjectDataCommandExecution["changedRecords"],
+) {
+  const projectIds = projectIdsForAction(state, projectId, action.target);
+  const changes = normalizeWorkflowChanges(action.changes || {});
+  const fields = [
+    ...Object.keys(changes.record),
+    ...Object.keys(changes.booleans),
+    ...Object.keys(changes.enums),
+  ];
+  if (!projectIds.size || !fields.length) return state;
+  let next = state;
+  projectIds.forEach((targetProjectId) => {
+    const workflow = getWorkflow(next, targetProjectId);
+    const before = {
+      ...workflowRecord(workflow),
+      ...workflow.resourceInputs,
+    };
+    const changedWorkflow = applyWorkflowRecord(workflow, changes.record);
+    const afterWorkflow: DeliveryWorkflow = {
+      ...changedWorkflow,
+      resourceInputs: {
+        ...changedWorkflow.resourceInputs,
+        ...changes.booleans,
+        ...changes.enums,
+      },
+    };
+    const after = {
+      ...workflowRecord(afterWorkflow),
+      ...afterWorkflow.resourceInputs,
+    };
+    recordObjectChange(
+      "workflow",
+      "AI生成草稿",
+      projectName(next, targetProjectId),
+      before as unknown as Record<string, unknown>,
+      after as unknown as Record<string, unknown>,
+      fields,
+      changedRecords,
+    );
+    next = upsertWorkflow(next, afterWorkflow);
+  });
+  return next;
+}
+
 function selectTasks(items: Task[], target?: CommandTarget) {
   if (target?.scope === "all") return items;
   if (target?.scope === "open") return items.filter((task) => task.status !== "done");
@@ -825,6 +1067,11 @@ function selectRisksIssues(items: RiskIssue[], target?: CommandTarget) {
     item.riskVisibility,
     item.responsePlan,
   ]);
+}
+
+function selectWeeklyReports(items: WeeklyReport[], target?: CommandTarget) {
+  if (target?.scope === "all") return items;
+  return selectByQueries(items, target, (item) => [item.id, item.reportDate, item.title, item.content, item.mailSubject, item.projectStatus, item.audience]);
 }
 
 function selectMilestones(items: ProjectMilestone[], target?: CommandTarget) {
@@ -858,6 +1105,10 @@ function applyDeliverableChanges(item: Deliverable, rawChanges: Record<string, u
 
 function applyRiskChanges(item: RiskIssue, rawChanges: Record<string, unknown>): RiskIssue {
   return { ...item, ...normalizeRiskChanges(rawChanges) };
+}
+
+function applyWeeklyReportChanges(item: WeeklyReport, rawChanges: Record<string, unknown>): WeeklyReport {
+  return { ...item, ...normalizeWeeklyReportChanges(rawChanges), updatedAt: new Date().toISOString() };
 }
 
 function normalizeProjectChanges(changes: Record<string, unknown>): Partial<Project> {
@@ -951,6 +1202,75 @@ function normalizeRiskChanges(changes: Record<string, unknown>): Partial<RiskIss
   return next;
 }
 
+function normalizeWeeklyReportChanges(changes: Record<string, unknown>): Partial<WeeklyReport> {
+  const next: Partial<WeeklyReport> = {};
+  const audience = stringValue(changes.audience);
+  if (audience === "internal" || audience === "customer") next.audience = audience;
+  assignString(next, changes, "title");
+  assignString(next, changes, "content");
+  assignString(next, changes, "projectOwner");
+  assignString(next, changes, "implementationPersonnel");
+  assignString(next, changes, "recipientsTo");
+  assignString(next, changes, "recipientsCc");
+  assignString(next, changes, "mailSubject");
+  const reportDate = normalizeDate(stringValue(changes.reportDate));
+  if (reportDate) next.reportDate = reportDate;
+  const implementationMode = stringValue(changes.implementationMode);
+  if (implementationMode === "本地实施" || implementationMode === "出差实施") next.implementationMode = implementationMode;
+  const projectStatus = stringValue(changes.projectStatus);
+  if (projectStatus === "健康" || projectStatus === "延期" || projectStatus === "暂停" || projectStatus === "需关注" || projectStatus === "风险") next.projectStatus = projectStatus;
+  const mailDraftStatus = stringValue(changes.mailDraftStatus);
+  if (mailDraftStatus === "not-created" || mailDraftStatus === "local-draft" || mailDraftStatus === "mailbox-draft" || mailDraftStatus === "failed") next.mailDraftStatus = mailDraftStatus;
+  const markdownArchiveStatus = stringValue(changes.markdownArchiveStatus);
+  if (markdownArchiveStatus === "not-archived" || markdownArchiveStatus === "archived" || markdownArchiveStatus === "failed") next.markdownArchiveStatus = markdownArchiveStatus;
+  return next;
+}
+
+function normalizeWorkflowChanges(changes: Record<string, unknown>): {
+  record: Partial<Record<keyof ReturnType<typeof workflowRecord>, string>>;
+  booleans: Partial<Pick<DeliveryWorkflow["resourceInputs"], "hasFixedPersonDays" | "needsFlink" | "includesSiem" | "includesUeba" | "involvesDataMigration">>;
+  enums: Partial<Pick<DeliveryWorkflow["resourceInputs"], "dailyDataUnit" | "singleNodeCapacityUnit">>;
+} {
+  const record: Partial<Record<keyof ReturnType<typeof workflowRecord>, string>> = {};
+  const booleans: Partial<Pick<DeliveryWorkflow["resourceInputs"], "hasFixedPersonDays" | "needsFlink" | "includesSiem" | "includesUeba" | "involvesDataMigration">> = {};
+  const enums: Partial<Pick<DeliveryWorkflow["resourceInputs"], "dailyDataUnit" | "singleNodeCapacityUnit">> = {};
+  const stringFields: Array<keyof ReturnType<typeof workflowRecord>> = [
+    "sowContent",
+    "sowFileName",
+    "sowHandoff",
+    "personDayContent",
+    "personDayHandoff",
+    "hardwareContent",
+    "hardwareHandoff",
+    "wbsContent",
+    "wbsHandoff",
+    "implementationContent",
+    "fixedPersonDays",
+    "analysisAppCount",
+    "analysisBusinessSystemCount",
+    "agentCount",
+    "syslogCount",
+    "dailyDataVolume",
+    "peakFactor",
+    "singleNodeUsableTb",
+    "nodeCount",
+    "retentionDays",
+  ];
+  stringFields.forEach((field) => {
+    const value = stringValue(changes[field]);
+    if (value) record[field] = value;
+  });
+  (["hasFixedPersonDays", "needsFlink", "includesSiem", "includesUeba", "involvesDataMigration"] as const).forEach((field) => {
+    const value = booleanValue(changes[field]);
+    if (value !== null) booleans[field] = value;
+  });
+  const dailyDataUnit = stringValue(changes.dailyDataUnit);
+  if (dailyDataUnit === "GB" || dailyDataUnit === "TB") enums.dailyDataUnit = dailyDataUnit;
+  const singleNodeCapacityUnit = stringValue(changes.singleNodeCapacityUnit);
+  if (singleNodeCapacityUnit === "GB" || singleNodeCapacityUnit === "TB") enums.singleNodeCapacityUnit = singleNodeCapacityUnit;
+  return { record, booleans, enums };
+}
+
 function normalizeMilestoneChanges(changes: Record<string, unknown>): Partial<ProjectMilestone> {
   const next: Partial<ProjectMilestone> = {};
   assignString(next, changes, "title");
@@ -1011,7 +1331,7 @@ function recordObjectChange(
 }
 
 function projectIdsForAction(state: AppState, projectId: string | "all", target?: CommandTarget) {
-  const base = projectId === "all" ? state.projects : state.projects.filter((project) => project.id === projectId);
+  const base = projectId === "all" ? activeProjects(state) : state.projects.filter((project) => project.id === projectId);
   const projectQueries = [...(target?.projectIds || []), ...(target?.projectNames || [])].filter(Boolean);
   return new Set(
     base
@@ -1093,6 +1413,8 @@ function itemLabel(entity: EntityType, item: { id: string } & Record<string, unk
   if (entity === "deliverables") return String((item as unknown as Deliverable).name || (item as unknown as Deliverable).code || item.id);
   if (entity === "risksIssues") return String((item as unknown as RiskIssue).title || item.id);
   if (entity === "milestones") return formatProjectMilestoneOption(item as unknown as ProjectMilestone);
+  if (entity === "weeklyReports") return String((item as unknown as WeeklyReport).title || (item as unknown as WeeklyReport).reportDate || item.id);
+  if (entity === "workflow") return "AI生成草稿";
   return String((item as unknown as Project).name || item.id);
 }
 
@@ -1104,6 +1426,8 @@ function fieldLabel(entity: EntityType, field: string) {
     deliverables: deliverableFieldLabels,
     risksIssues: riskFieldLabels,
     milestones: milestoneFieldLabels,
+    weeklyReports: weeklyReportFieldLabels,
+    workflow: workflowFieldLabels,
   };
   if (field === "status" && entity === "tasks") return "状态";
   return maps[entity][field] || field;
@@ -1124,6 +1448,8 @@ function actionTypeEntity(type: AiProjectDataCommandAction["type"]): EntityType 
   if (type === "updateDeliverables") return "deliverables";
   if (type === "updateRisksIssues") return "risksIssues";
   if (type === "updateMilestones") return "milestones";
+  if (type === "updateWeeklyReports") return "weeklyReports";
+  if (type === "updateWorkflow") return "workflow";
   return "project";
 }
 
@@ -1156,7 +1482,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isEntityType(value: unknown): value is EntityType {
-  return value === "project" || value === "tasks" || value === "scopeItems" || value === "deliverables" || value === "risksIssues" || value === "milestones";
+  return (
+    value === "project" ||
+    value === "tasks" ||
+    value === "scopeItems" ||
+    value === "deliverables" ||
+    value === "risksIssues" ||
+    value === "milestones" ||
+    value === "weeklyReports" ||
+    value === "workflow"
+  );
 }
 
 function isTaskStatus(value: string): value is TaskStatus {
@@ -1186,6 +1521,16 @@ function numberValue(value: unknown) {
 function integerValue(value: unknown) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+}
+
+function booleanValue(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1 ? true : value === 0 ? false : null;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (["true", "1", "yes", "y", "是", "包含", "需要", "启用"].includes(normalized)) return true;
+  if (["false", "0", "no", "n", "否", "不包含", "不需要", "禁用"].includes(normalized)) return false;
+  return null;
 }
 
 function primitiveValue(value: unknown): string | number {

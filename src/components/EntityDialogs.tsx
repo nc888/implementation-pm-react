@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { AlertTriangle, Archive, ArrowDown, ArrowUp, X } from "lucide-react";
 import type { AppState, Deliverable, Project, ProjectMilestone, RiskIssue, ScopeItem, Task, TaskStage, TaskStatus } from "../types";
 import { formatProjectMilestoneOption, getProject, normalizeProjectMilestones, projectMilestonesForState, projectTasks, stageDefinitionsForState, taskStatusLabels } from "../services/contextBuilder";
 import { Button, DateField } from "./ui";
@@ -926,21 +926,24 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const ConfirmIcon = tone === "danger" ? AlertTriangle : Archive;
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="modal-panel confirm" role="dialog" aria-modal="true" aria-labelledby="confirmDialogTitle">
-        <header className="modal-header">
-          <div>
-            <span className="page-kicker">Confirm</span>
+        <header className="modal-header confirm-header">
+          <div className={`confirm-icon ${tone}`} aria-hidden="true">
+            <ConfirmIcon />
+          </div>
+          <div className="confirm-title-block">
             <h3 id="confirmDialogTitle">{title}</h3>
+            <p>{description}</p>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="关闭">
-            ×
+            <X aria-hidden="true" />
           </button>
         </header>
-        <div className="modal-form">
-          <p className="confirm-copy">{description}</p>
-          <footer className="modal-actions">
+        <div className="modal-form confirm-form">
+          <footer className="modal-actions confirm-actions">
             <Button tone="ghost" onClick={onClose}>
               取消
             </Button>

@@ -12,6 +12,7 @@ import type {
   TaskStageDefinition,
   TaskStatus,
 } from "../types";
+import { activeProjects } from "./projectStatus";
 
 export const taskStatusLabels = {
   todo: "待处理",
@@ -263,7 +264,7 @@ export type TaskNode = Task & {
 const taskCodeCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
 
 export function getProject(state: AppState): Project {
-  return state.projects.find((item) => item.id === state.ui.currentProjectId) || state.projects[0];
+  return state.projects.find((item) => item.id === state.ui.currentProjectId) || activeProjects(state)[0] || state.projects[0];
 }
 
 export function projectTasks(state: AppState, projectId = getProject(state).id) {
